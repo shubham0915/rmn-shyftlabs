@@ -11,7 +11,7 @@ pinned: false
 # Privacy-Preserving Agentic Retail Media Network (RMN) Engine
 
 > **Built for ShyftLabs AdTech | 2027 Campus Drive**  
-> Real-time on-site advertising with Differential Privacy (DuckDB), Vector Search (ChromaDB), ML Ranking (XGBoost), and Agentic LLM Copywriting (Groq).
+> Real-time on-site advertising with Differential Privacy (DuckDB), Vector Search (ChromaDB), **XGBoost ML Ranking**, and **Agentic LLM Copywriting** (Groq).
 
 [![Live Demo](https://img.shields.io/badge/Demo-HuggingFace-FF9D00?logo=huggingface)](https://huggingface.co/spaces/shubhamkya/rmn-engine)
 [![Privacy](https://img.shields.io/badge/Privacy-ε≤0.9-065f46)](https://diffprivlib.readthedocs.io)

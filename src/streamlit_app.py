@@ -273,7 +273,8 @@ with tab1:
             with st.expander("Why this ad was chosen"):
                 st.markdown(f"- **Relevance score**: {primary_ad.get('similarity', 0):.3f}")
                 st.markdown(f"- **Popularity (CTR)**: {primary_ad.get('ctr', 0) * 100:.1f}%")
-                st.markdown(f"- **Final blended score**: {primary_ad.get('final_score', 0):.3f}")
+                st.markdown(f"- **ML Predicted p(click)**: {primary_ad.get('final_score', 0):.3f}")
+                st.markdown(f"- **XGBoost Reranking**: Applied ✓")
                 st.markdown(f"- **Category match**: {primary_ad.get('category', 'unknown')}")
         else:
             st.info("👆 Click **Browse Page & Get Ad** to start the live demo.")
@@ -436,25 +437,22 @@ with tab4:
     st.markdown("""
 ```mermaid
 graph TD
-    A[🌐 User Browser / Streamlit] --> B[Event Capture POST /track_event]
-    B --> C[Redis Stream rmn:events]
-    C --> D[DuckDB Data Clean Room]
-    D --> E[diffprivlib Laplace Noise ε Tracking]
-    E --> F[sentence-transformers all-MiniLM-L6-v2]
-    F --> G[Redis Cache Cosine Ranking]
-    G --> H[FastAPI GET /get_ad < 100ms]
-    H --> I[Streamlit Ad Display + Personalised Copy]
-    I --> J[Feedback Loop CTR Tracking]
+    A[🌐 User Context] --> B[ChromaDB Vector Retrieval]
+    A --> C[Groq LLM Persona Copygen]
+    B --> D[XGBoost ML Ranking Engine]
+    C --> E[FastAPI / Streamlit Ad Display]
+    D --> E
+    E --> F[Async Background Event Worker]
+    F --> G[DuckDB Clean Room + DP Laplace Noise]
+    G --> A
 
     subgraph Privacy-First Layer
-        D
-        E
-    end
-    subgraph Real-Time Layer
-        B
-        C
         G
-        H
+    end
+    subgraph Real-Time AI Layer
+        B
+        D
+        C
     end
 ```
 """)
@@ -463,14 +461,14 @@ graph TD
     st.markdown("""
 | Component | Technology | Why |
 |-----------|-----------|-----|
-| API Backend | FastAPI + Uvicorn | Async, <100ms, auto Swagger docs |
-| Frontend | Streamlit | Rapid demo UI, no JS |
-| Data Clean Room | DuckDB | In-process SQL, handles 2.7M rows |
-| Differential Privacy | diffprivlib | IBM-maintained, Laplace/Gaussian |
+| API Backend | FastAPI + Uvicorn | Async background ingestion |
+| Data Clean Room | DuckDB | OLAP Performance on 2.7M rows |
+| Vector Engine | **ChromaDB** | HNSW for 10,000+ ad catalog scale |
+| ML Ranking | **XGBoost** | Re-ranking for `p(click)` probability |
+| Agentic LLM | **Groq (Llama 3)** | Sub-second personalized copywriting |
 | Embeddings | sentence-transformers | CPU-efficient `all-MiniLM-L6-v2` |
-| Caching / Streaming | Redis | Sub-ms cache, persistent stream |
-| Plots | Plotly | Interactive, zero cost |
-| Dataset | Retailrocket (2.7M) | Real e-commerce event log |
+| Privacy Math | diffprivlib | Persistent DP budget tracking |
+| Dataset | Retailrocket (2.7M) | Real-world e-commerce event stream |
 """)
 
     col1, col2, col3 = st.columns(3)

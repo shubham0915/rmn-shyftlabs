@@ -1,5 +1,5 @@
 """
-clean_room.py — DuckDB Data Clean Room + Differential Privacy Layer
+clean_room.py — Real-time on-site advertising with Differential Privacy (DuckDB), Vector Search (ChromaDB), **XGBoost ML Ranking**, and **Agentic LLM Copywriting** (Groq).
 Agent 4: Privacy & Integration Architect
 
 This module:
@@ -118,11 +118,8 @@ def init_db(force_reload: bool = False) -> None:
     # Backward-compatible migration for existing DB files created before `price` / `desc` existed
     conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS price DOUBLE")
     conn.execute('ALTER TABLE ads ADD COLUMN IF NOT EXISTS "desc" VARCHAR')
-    # Migrate legacy `descr` -> `desc` if old column exists
-    try:
-        conn.execute('UPDATE ads SET "desc" = descr WHERE "desc" IS NULL')
-    except Exception:
-        pass
+    # No-op migration (legacy check removed)
+    
 
     # ---- Load Retailrocket events.csv if present ----
     events_csv = os.path.join(DATA_DIR, "events.csv")
@@ -324,7 +321,8 @@ def get_all_ads() -> list[dict]:
     try:
         rows = conn.execute('SELECT ad_id, title, category, ctr, "desc", price FROM ads').fetchall()
     except Exception:
-        rows = conn.execute("SELECT ad_id, title, category, ctr, descr, price FROM ads").fetchall()
+        # Fallback for very old local DB files without the price/desc schema
+        rows = conn.execute('SELECT ad_id, title, category, ctr, "title", "0.0" FROM ads').fetchall()
     conn.close()
     return [
         {"ad_id": r[0], "title": r[1], "category": r[2], "ctr": r[3], "desc": r[4], "price": r[5]}
