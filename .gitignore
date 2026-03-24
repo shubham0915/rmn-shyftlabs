@@ -1,0 +1,28 @@
+# Data files (too large for GitHub — download from Kaggle)
+data/*.csv
+data/*.duckdb
+data/clean_room.duckdb
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv
+venv/
+*.egg-info/
+dist/
+build/
+
+# Models (auto-downloaded by sentence-transformers)
+.cache/
+
+# Logs
+privacy_budget.log
+
+# OS
+.DS_Store
+
+# Logs & nohup
+nohup.out
+*.log
