@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+redis
+duckdb
+diffprivlib
+sentence-transformers
+streamlit
+numpy
+pandas
+plotly
+requests
+groq
+python-dotenv
+chromadb
+xgboost
