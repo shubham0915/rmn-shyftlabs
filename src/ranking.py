@@ -11,6 +11,7 @@ Pipeline:
 import logging
 import numpy as np
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 
 from src.config import TOP_K
 from src.embeddings import encode, get_collection, build_context_string
@@ -97,10 +98,23 @@ def rank_ads(
 
     # 7. Finalize output and add copy formatting
     ranked = []
-    for rank, ad in enumerate(candidates[:TOP_K]):
-        ad["rank"] = rank + 1
-        ad["copy"] = generate_copy(ad, page_text)
-        ranked.append(ad)
+    top_candidates = candidates[:TOP_K]
+
+    # Parallelize LLM copy generation using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=TOP_K) as executor:
+        # Submit all copy generation tasks
+        future_to_ad = {
+            executor.submit(generate_copy, ad, page_text): ad 
+            for ad in top_candidates
+        }
+        
+        for i, ad in enumerate(top_candidates):
+            ad["rank"] = i + 1
+            # We'll wait for the futures in the same order as the ads
+            # But the actual API calls happen concurrently
+            future = list(future_to_ad.keys())[i] 
+            ad["copy"] = future.result()
+            ranked.append(ad)
 
     return ranked
 
