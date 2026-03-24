@@ -72,25 +72,31 @@ CREATE TABLE IF NOT EXISTS ads (
     "desc"    VARCHAR,
     price     DOUBLE
 );
+
+-- Daily Privacy Budget Tracker
+CREATE TABLE IF NOT EXISTS privacy_budget (
+    date DATE PRIMARY KEY,
+    epsilon_used DOUBLE
+);
 """
 
 # ---------------------------------------------------------------------------
-# Budget tracker (module-level singleton)
+# Persistent Budget tracker
 # ---------------------------------------------------------------------------
-_epsilon_used: float = 0.0
-
 def get_epsilon_used() -> float:
-    return _epsilon_used
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT epsilon_used FROM privacy_budget WHERE date = CURRENT_DATE").fetchone()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        conn.close()
 
-def reset_epsilon() -> None:
-    global _epsilon_used
-    _epsilon_used = 0.0
-    _log_budget()
-
-def _log_budget() -> None:
+def _log_budget(current_eps: float) -> None:
     """Append current ε to the privacy log file."""
     with open(PRIVACY_LOG, "a") as f:
-        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')}  ε_used={_epsilon_used:.3f}  ε_max={EPSILON_MAX}\n")
+        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')}  ε_used={current_eps:.3f}  ε_max={EPSILON_MAX}\n")
 
 # ---------------------------------------------------------------------------
 # DB connection (per-thread/process – DuckDB handles concurrent reads fine)
@@ -174,12 +180,13 @@ def init_db(force_reload: bool = False) -> None:
     conn.close()
     logger.info("DuckDB Clean Room initialised.")
 
-def _rebuild_aggregates(conn: duckdb.DuckDBPyConnection) -> None:
-    # Skip if already built (avoids slow 2.75M-row JOIN on every restart)
-    n_existing = conn.execute("SELECT COUNT(*) FROM aggregates").fetchone()[0]
-    if n_existing > 0:
-        logger.info(f"Aggregates already built ({n_existing:,} rows) — skipping rebuild.")
-        return
+def _rebuild_aggregates(conn: duckdb.DuckDBPyConnection, force: bool = False) -> None:
+    # Skip if already built (avoids slow 2.75M-row JOIN on every restart) unless forced
+    if not force:
+        n_existing = conn.execute("SELECT COUNT(*) FROM aggregates").fetchone()[0]
+        if n_existing > 0:
+            logger.info(f"Aggregates already built ({n_existing:,} rows) — skipping rebuild.")
+            return
 
     conn.execute("DELETE FROM aggregates")
     n_events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -209,19 +216,49 @@ def _seed_ads(conn: duckdb.DuckDBPyConnection) -> None:
         )
 
 # ---------------------------------------------------------------------------
+# Background Ingestion
+# ---------------------------------------------------------------------------
+def flush_events(events: list[dict]) -> int:
+    """
+    Bulk insert unprocessed events into DuckDB tracking tables and rebuild privacy aggregates.
+    """
+    if not events:
+        return 0
+        
+    conn = get_connection()
+    try:
+        # Create a tracker table for the live API events
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS api_tracking_events (
+                event_id VARCHAR, user_hash VARCHAR, page_text VARCHAR, retailer VARCHAR, ts DOUBLE
+            )
+        ''')
+        # Bulk Insert
+        conn.executemany(
+            "INSERT INTO api_tracking_events VALUES (?, ?, ?, ?, ?)",
+            [
+                (e["event_id"], e["user_hash"], e["page_text"], e.get("retailer", ""), float(e["ts"])) 
+                for e in events
+            ]
+        )
+        
+        # We force an aggregate rebuild so the Clean Room updates based on new ingestion
+        logger.info(f"[CleanRoom Worker] Inserting {len(events)} events and rebuilding aggregates...")
+        _rebuild_aggregates(conn, force=True)
+        return len(events)
+    except Exception as e:
+        logger.error(f"[CleanRoom Worker] Failed to flush events: {e}")
+        return 0
+    finally:
+        conn.close()
+
+# ---------------------------------------------------------------------------
 # Differentially-Private aggregate queries
 # ---------------------------------------------------------------------------
 def _apply_laplace(true_value: float) -> float:
-    """Add Laplace noise and deduct from ε budget."""
-    global _epsilon_used
-    if _epsilon_used + EPSILON_PER_QUERY > EPSILON_MAX:
-        raise RuntimeError(
-            f"Privacy budget exhausted: ε={_epsilon_used:.3f} + {EPSILON_PER_QUERY} > {EPSILON_MAX}"
-        )
+    """Add Laplace noise."""
     mechanism = Laplace(epsilon=EPSILON_PER_QUERY, sensitivity=SENSITIVITY)
     noisy = mechanism.randomise(float(true_value))
-    _epsilon_used += EPSILON_PER_QUERY
-    _log_budget()
     return max(0.0, noisy)   # counts cannot be negative
 
 def get_dp_category_stats(category_id: int | None = None) -> dict:
@@ -230,8 +267,30 @@ def get_dp_category_stats(category_id: int | None = None) -> dict:
     If category_id is None, returns overall stats.
     These noisy stats are fed into the embedding context string.
     """
+    required_budget = 3 * EPSILON_PER_QUERY
     conn = get_connection()
     try:
+        # Pre-deduct 3 * EPSILON_PER_QUERY from the daily privacy budget
+        conn.execute("BEGIN TRANSACTION")
+        current_eps_row = conn.execute("SELECT epsilon_used FROM privacy_budget WHERE date = CURRENT_DATE").fetchone()
+        current_eps = float(current_eps_row[0]) if current_eps_row else 0.0
+        
+        if current_eps + required_budget > EPSILON_MAX:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(
+                f"Privacy budget exhausted: ε={current_eps:.3f} + {required_budget} > {EPSILON_MAX}"
+            )
+            
+        new_eps = current_eps + required_budget
+        conn.execute("""
+            INSERT INTO privacy_budget (date, epsilon_used) 
+            VALUES (CURRENT_DATE, ?) 
+            ON CONFLICT (date) DO UPDATE SET epsilon_used = ?
+        """, [required_budget, new_eps])
+        conn.execute("COMMIT")
+        
+        _log_budget(new_eps)
+        
         if category_id is not None:
             row = conn.execute(
                 "SELECT n_views, n_carts, n_purchases FROM aggregates WHERE category_id = ?",
@@ -249,8 +308,11 @@ def get_dp_category_stats(category_id: int | None = None) -> dict:
             "dp_views":     _apply_laplace(row[0] or 0),
             "dp_carts":     _apply_laplace(row[1] or 0),
             "dp_purchases": _apply_laplace(row[2] or 0),
-            "epsilon_used": _epsilon_used,
+            "epsilon_used": new_eps,
         }
+    except Exception as e:
+        # Explicit rollback handled above, just raise generic errors
+        raise e
     finally:
         conn.close()
 

@@ -34,10 +34,11 @@ from pydantic import BaseModel
 from src.config import REDIS_HOST, REDIS_PORT, REDIS_DB, STREAM_KEY
 from src.clean_room import (
     init_db, get_all_ads, get_dp_category_stats,
-    simulate_ctr_lift, get_epsilon_used
+    simulate_ctr_lift, get_epsilon_used, flush_events
 )
 from src.embeddings import warmup
 from src.ranking import rank_ads, get_similarity_scores
+from src.ltr import train_and_save_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -81,6 +82,53 @@ def _push_event(payload: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Background Async Event Worker
+# ---------------------------------------------------------------------------
+async def _event_worker_loop():
+    """Runs continuously in the background to flush tracked events to DuckDB."""
+    logger.info("[Worker] Background event ingester started.")
+    while True:
+        await asyncio.sleep(5)
+        
+        events_to_flush = []
+        r = _get_redis()
+        
+        if r:
+            try:
+                # Read from Redis stream explicitly mapping bytes to strings
+                messages = r.xread({STREAM_KEY: '0'}, count=1000)
+                if messages:
+                    stream_msgs = messages[0][1]
+                    msg_ids_to_del = []
+                    for msg_id, msg_data in stream_msgs:
+                        try:
+                            event = {k.decode('utf-8'): v.decode('utf-8') for k, v in msg_data.items()}
+                            events_to_flush.append(event)
+                            msg_ids_to_del.append(msg_id)
+                        except Exception:
+                            # Safely ignore corrupted events
+                            msg_ids_to_del.append(msg_id)
+                    
+                    if msg_ids_to_del:
+                        r.xdel(STREAM_KEY, *msg_ids_to_del)
+            except Exception as e:
+                logger.error(f"[Worker] Redis stream read failed: {e}")
+        else:
+            # Fallback to local memory queue
+            global _event_queue
+            if _event_queue:
+                events_to_flush = _event_queue[:1000]
+                _event_queue = _event_queue[1000:]
+                
+        # Send to DB
+        if events_to_flush:
+            loop = asyncio.get_event_loop()
+            flushed = await loop.run_in_executor(None, flush_events, events_to_flush)
+            if flushed > 0:
+                logger.info(f"[Worker] Successfully securely flushed {flushed} events into DB.")
+
+
+# ---------------------------------------------------------------------------
 # Lifespan: DB init + embedding warmup
 # ---------------------------------------------------------------------------
 @asynccontextmanager
@@ -94,11 +142,20 @@ async def lifespan(app: FastAPI):
     # 2. Init PyTorch on the MAIN THREAD (critical on macOS: loading in executor deadlocks)
     warmup()
     
-    # 3. Redis check
+    # 3. Train/Load XGBoost Model
+    train_and_save_model()
+    
+    # 4. Redis check
     _get_redis()
+    
+    # 4. Start Event Ingestion Worker
+    # Store task reference to avoid garbage collection
+    worker_task = asyncio.create_task(_event_worker_loop())
     
     logger.info("[Agent2] Startup complete.")
     yield
+    
+    worker_task.cancel()
     logger.info("[Agent2] Shutdown.")
 
 

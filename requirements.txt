@@ -9,3 +9,7 @@ numpy
 pandas
 plotly
 requests
+groq
+python-dotenv
+chromadb
+xgboost

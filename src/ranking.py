@@ -3,23 +3,20 @@ ranking.py — Semantic Ranking + Ad Selection
 Agent 3: AI/ML Specialist
 
 Pipeline:
- 1. Compute cosine similarity between context vector and every cached ad vector.
- 2. Blend with popularity (CTR) signal.
- 3. Return top-K ranked ads + personalised copy (agentic stub ready for Ollama).
-
-Formula:
-    final_score[i] = 0.7 * cosine_sim[i]  +  0.3 * normalised_ctr[i]
+ 1. Query ChromaDB for the Top N most semantically similar ads to the context. 
+ 2. Rerank using XGBoost Learning-to-Rank probability models.
+ 3. Return top-K ranked ads + personalised copy.
 """
 
 import logging
 import numpy as np
 from typing import Optional
 
-from src.config import SIMILARITY_WEIGHT, POPULARITY_WEIGHT, TOP_K
-from src.embeddings import encode, get_ad_embeddings, build_context_string
+from src.config import TOP_K
+from src.embeddings import encode, get_collection, build_context_string
+from src.ltr import score_candidates
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Core ranking
@@ -30,59 +27,79 @@ def rank_ads(
     dp_stats: Optional[dict] = None,
 ) -> list[dict]:
     """
-    Rank a list of ad dicts by relevance to the current page context.
-
-    Args:
-        page_text : Raw text of the current retailer page.
-        ads       : List of ad dicts with keys [ad_id, title, category, ctr, desc].
-        dp_stats  : DP-noisy aggregate stats from clean_room (optional).
-
-    Returns:
-        Sorted list of ads (highest score first) each augmented with:
-          - 'similarity'   : raw cosine similarity
-          - 'final_score'  : blended score
-          - 'copy'         : personalised ad copy string
+    Rank ads using ChromaDB for semantic retrieval, followed by XGBoost LTR reranking.
     """
-    if not ads:
+    collection = get_collection()
+    if collection.count() == 0:
         return []
 
     # 1. Build context vector
     ctx_text = build_context_string(page_text, dp_stats)
-    ctx_vec  = encode(ctx_text)                              # (dim,)
+    ctx_vec  = encode(ctx_text)
 
-    # 2. Get / build ad embedding matrix
-    ad_ids, ad_matrix = get_ad_embeddings(ads)               # (N, dim)
+    # 2. Retrieve Top-N from ChromaDB
+    results = collection.query(
+        query_embeddings=[ctx_vec],
+        n_results=10,
+        include=["metadatas", "distances"]
+    )
 
-    # 3. Cosine similarities — both vectors are already L2-normalised
-    similarities = ad_matrix @ ctx_vec                       # (N,)
+    if not results["ids"] or len(results["ids"][0]) == 0:
+        return []
 
-    # 4. Normalise CTR into [0, 1]
-    ctrs = np.array([a["ctr"] for a in ads], dtype=np.float32)
-    ctr_norm = (ctrs - ctrs.min()) / (ctrs.max() - ctrs.min() + 1e-9)
+    retrieved_ids = results["ids"][0]
+    distances     = results["distances"][0]
+    metadatas     = results["metadatas"][0]
 
-    # 5. Blend
-    final_scores = SIMILARITY_WEIGHT * similarities + POPULARITY_WEIGHT * ctr_norm  # (N,)
-
-    # 5b. Bonus for budget intent
-    budget_bonus = np.zeros(len(ads), dtype=np.float32)
+    # 3. Extract features for XGBoost
     page_lower = page_text.lower()
-    if "under" in page_lower or "budget" in page_lower:
-        prices = np.array([a.get("price", 9999) for a in ads], dtype=np.float32)
-        budget_bonus = np.where(prices < 3000, 0.15, 0.0).astype(np.float32)
+    budget_intent = 1.0 if ("under" in page_lower or "budget" in page_lower) else 0.0
 
-    final_scores = final_scores + budget_bonus
+    prices = np.array([meta.get("price", 9999) for meta in metadatas], dtype=np.float32)
+    price_min, price_max = prices.min(), prices.max()
+    price_denom = (price_max - price_min) if (price_max - price_min) > 0 else 1e-9
 
-    # 6. Sort descending
-    order = np.argsort(final_scores)[::-1]
+    features_matrix = []
+    candidates = []
 
-    # 7. Build annotated output
+    for idx, (ad_id, dist, meta) in enumerate(zip(retrieved_ids, distances, metadatas)):
+        similarity = 1.0 - float(dist)
+        norm_price = (meta.get("price", 9999) - price_min) / price_denom
+        norm_ctr   = meta.get("ctr", 0.0)
+        
+        # [similarity, historical_ctr, price_normalized, budget_intent]
+        features_matrix.append([
+            similarity,
+            float(norm_ctr),
+            float(norm_price),
+            budget_intent
+        ])
+        
+        candidates.append({
+            "ad_id": ad_id,
+            "title": meta["title"],
+            "desc": meta.get("desc", ""),
+            "category": meta["category"],
+            "ctr": meta["ctr"],
+            "price": meta.get("price"),
+            "similarity": similarity,
+        })
+
+    # 4. ML Inference
+    predictions = score_candidates(features_matrix)
+
+    # 5. Append scores
+    for i, ad in enumerate(candidates):
+        ad["final_score"] = float(predictions[i])
+
+    # 6. Sort descending by our ML predicted probability
+    candidates.sort(key=lambda x: x["final_score"], reverse=True)
+
+    # 7. Finalize output and add copy formatting
     ranked = []
-    for rank, idx in enumerate(order[:TOP_K]):
-        ad = dict(ads[idx])
-        ad["similarity"]  = float(similarities[idx])
-        ad["final_score"] = float(final_scores[idx])
-        ad["rank"]        = rank + 1
-        ad["copy"]        = generate_copy(ad, page_text)
+    for rank, ad in enumerate(candidates[:TOP_K]):
+        ad["rank"] = rank + 1
+        ad["copy"] = generate_copy(ad, page_text)
         ranked.append(ad)
 
     return ranked
@@ -105,8 +122,18 @@ def generate_copy(ad: dict, page_text: str) -> str:
 # ---------------------------------------------------------------------------
 def get_similarity_scores(page_text: str, ads: list[dict]) -> list[float]:
     """Return just the similarity scores (no ranking) — used for CTR simulation."""
-    if not ads:
+    collection = get_collection()
+    if collection.count() == 0:
         return []
+    
     ctx_vec = encode(page_text)
-    _, ad_matrix = get_ad_embeddings(ads)
-    return (ad_matrix @ ctx_vec).tolist()
+    
+    total_ads = collection.count()
+    results = collection.query(
+        query_embeddings=[ctx_vec],
+        n_results=total_ads,
+        include=["distances"]
+    )
+    
+    distances = results["distances"][0]
+    return [1.0 - float(d) for d in distances]

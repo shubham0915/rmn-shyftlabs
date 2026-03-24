@@ -1,5 +1,7 @@
 # Data files (too large for GitHub — download from Kaggle)
 data/*.csv
+data/chroma/
+data/ltr_model.json
 data/*.duckdb
 data/clean_room.duckdb
 

@@ -1,35 +1,35 @@
 """
-embeddings.py — Sentence-Transformer Embedding Layer
+embeddings.py — Sentence-Transformer Embedding Layer & ChromaDB Storage
 Agent 3: AI/ML Specialist
 
 Responsibilities:
  - Load all-MiniLM-L6-v2 (CPU-friendly, ~80 MB)
  - Build context strings from page_text + DP-noisy stats
- - Cache ad embeddings in Redis (avoids re-computing on every request)
- - Expose encode() and get_ad_embeddings() for ranking.py
+ - Initialize ChromaDB and populate it with ad embeddings
+ - Expose get_collection() and encode() for ranking.py
 """
 
-import json
 import logging
 import numpy as np
-from functools import lru_cache
 from typing import Optional
 
+import chromadb
 from sentence_transformers import SentenceTransformer
 
 from src.config import (
     EMBEDDING_MODEL_NAME,
-    REDIS_HOST, REDIS_PORT, REDIS_DB, EMBED_CACHE,
+    CHROMA_DB_DIR,
     SYNTHETIC_ADS,
 )
 
 logger = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------------------------
-# Model (lazy singleton — loads once, stays in memory)
+# Globals
 # ---------------------------------------------------------------------------
 _model: Optional[SentenceTransformer] = None
+_chroma_client: Optional[chromadb.PersistentClient] = None
+_collection: Optional[chromadb.Collection] = None
 
 def get_model() -> SentenceTransformer:
     global _model
@@ -39,19 +39,17 @@ def get_model() -> SentenceTransformer:
         logger.info("Model loaded.")
     return _model
 
-
-# ---------------------------------------------------------------------------
-# In-memory helper (fast fallback since this is a 0-budget laptop demo)
-# ---------------------------------------------------------------------------
-
-_mem_cache: dict[str, list] = {}   # fallback in-memory store
-
-def _cache_get(key: str) -> Optional[np.ndarray]:
-    return _mem_cache.get(key)
-
-def _cache_set(key: str, vec: np.ndarray) -> None:
-    serialised = json.dumps(vec.tolist())
-    _mem_cache[key] = np.array(json.loads(serialised), dtype=np.float32)
+def get_collection() -> chromadb.Collection:
+    global _collection
+    if _collection is None:
+        global _chroma_client
+        logger.info(f"Initializing ChromaDB at {CHROMA_DB_DIR} …")
+        _chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+        _collection = _chroma_client.get_or_create_collection(
+            name="ad_catalog",
+            metadata={"hnsw:space": "cosine"} # Enforce Cosine Similarity
+        )
+    return _collection
 
 
 # ---------------------------------------------------------------------------
@@ -61,13 +59,6 @@ def build_context_string(page_text: str, dp_stats: Optional[dict] = None) -> str
     """
     Combine page text with DP-noisy stats into a single context string.
     The noisy numbers add a weak personalisation signal without exposing raw data.
-
-    Args:
-        page_text : Free-text description of the current retailer page.
-        dp_stats  : Dict from clean_room.get_dp_category_stats() — may be None.
-
-    Returns:
-        A rich context string fed to the embedding model.
     """
     parts = [page_text.strip()]
     if dp_stats:
@@ -82,51 +73,61 @@ def build_context_string(page_text: str, dp_stats: Optional[dict] = None) -> str
 # ---------------------------------------------------------------------------
 # Embedding helpers
 # ---------------------------------------------------------------------------
-def encode(text: str) -> np.ndarray:
-    """Encode a single string into a unit-normalised vector."""
+def encode(text: str) -> list[float]:
+    """Encode a single string into a unit-normalised vector (Python list for Chroma)."""
     model = get_model()
+    # Ensure it's returned as a list of floats (Chroma expects native python types)
     vec = model.encode(text, normalize_embeddings=True, show_progress_bar=False)
-    return vec.astype(np.float32)
-
-
-def get_ad_embeddings(ads: list[dict]) -> tuple[list[str], np.ndarray]:
-    """
-    Return cached embeddings for each ad in `ads`.
-    Cache key: EMBED_CACHE + ad_id
-
-    Returns:
-        ad_ids  : list of ad_id strings in the same order
-        matrix  : ndarray of shape (N, embedding_dim)
-    """
-    ad_ids  = []
-    vectors = []
-
-    for ad in ads:
-        key = EMBED_CACHE + ad["ad_id"]
-        cached = _cache_get(key)
-        if cached is not None:
-            vectors.append(cached)
-        else:
-            # Embed: title + description combined
-            price = ad.get("price")
-            price_text = f" price {int(price)}" if price is not None else ""
-            text = f"{ad['title']} {ad.get('desc', '')}{price_text}"
-            vec  = encode(text)
-            _cache_set(key, vec)
-            vectors.append(vec)
-        ad_ids.append(ad["ad_id"])
-
-    matrix = np.vstack(vectors).astype(np.float32)   # (N, dim)
-    return ad_ids, matrix
+    return vec.astype(np.float32).tolist()
 
 
 # ---------------------------------------------------------------------------
-# Warm-up (call once at startup to pre-cache all synthetic ad embeddings)
+# Warm-up (call once at startup to pre-cache all synthetic ad embeddings into Chroma)
 # ---------------------------------------------------------------------------
 def warmup() -> None:
-    """Pre-cache all synthetic ad embeddings into Redis / mem_cache."""
-    logger.info("[Agent3] Warming up ad embedding cache …")
-    get_model()   # Force model to load into memory NOW, not on first user request
-    encode("warmup") # Force the first physically heavy PyTorch inference to occur on the main thread
-    get_ad_embeddings(SYNTHETIC_ADS)
-    logger.info(f"[Agent3] Cached {len(SYNTHETIC_ADS)} ad embeddings.")
+    """Initialize model, Chroma DB, and pre-cache all synthetic ads."""
+    logger.info("[Agent3] Warming up model and ChromaDB …")
+    
+    # Force model load and first inference
+    get_model()
+    encode("warmup")
+    
+    # Initialize Chroma Collection
+    collection = get_collection()
+    
+    # Check if we already populated the DB
+    if collection.count() > 0:
+        logger.info(f"[Agent3] ChromaDB already contains {collection.count()} ads. Skipping injection.")
+        return
+        
+    logger.info("[Agent3] Populating ChromaDB with Synthetic Ads...")
+    
+    ids = []
+    embeddings = []
+    metadatas = []
+    
+    for ad in SYNTHETIC_ADS:
+        price = ad.get("price")
+        price_text = f" price {int(price)}" if price is not None else ""
+        text = f"{ad['title']} {ad.get('desc', '')}{price_text}"
+        
+        vec = encode(text)
+        
+        ids.append(ad["ad_id"])
+        embeddings.append(vec)
+        metadatas.append({
+            "title": ad["title"],
+            "category": ad["category"],
+            "ctr": float(ad["ctr"]),
+            "price": float(price) if price is not None else 0.0,
+            "desc": ad.get("desc", ""),
+        })
+        
+    # Batch add to Chroma
+    collection.add(
+        ids=ids,
+        embeddings=embeddings,
+        metadatas=metadatas
+    )
+    
+    logger.info(f"[Agent3] Successfully cached {len(SYNTHETIC_ADS)} ad embeddings into ChromaDB.")

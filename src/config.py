@@ -37,10 +37,21 @@ STREAM_KEY    = "rmn:events"
 EMBED_CACHE   = "rmn:embeddings:"   # prefix, append ad_id
 
 # ---------------------------------------------------------------------------
-# FastAPI
+# App Config
 # ---------------------------------------------------------------------------
 API_HOST = "0.0.0.0"
 API_PORT = 8000
+CHROMA_DB_DIR = "./data/chroma"
+
+# ---------------------------------------------------------------------------
+# Groq API
+# ---------------------------------------------------------------------------
+import os
+from dotenv import load_dotenv
+
+load_dotenv() # Load from .env file if it exists locally
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 # ---------------------------------------------------------------------------
 # Demo Retailer pages (used by Streamlit)
