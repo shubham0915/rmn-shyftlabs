@@ -57,7 +57,7 @@ def generate_personalized_copy(ad_title: str, ad_desc: str, context: str) -> str
 
     try:
         response = _client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="models/gemini-1.5-flash",
             contents=prompt,
             config=genai_types.GenerateContentConfig(
                 system_instruction=_SYSTEM_INSTRUCTION,
