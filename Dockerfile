@@ -9,8 +9,13 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Install Python deps first (cached layer)
+# Install grpcio binary wheel FIRST (before chromadb pulls it in as a dep)
+# --only-binary=grpcio prevents pip from compiling grpcio from C++ source code,
+# which can take 60-90 minutes on a slow CPU. This keeps builds under 5 minutes.
 COPY requirements.txt .
+RUN pip install --no-cache-dir --only-binary=grpcio grpcio==1.62.3 grpcio-tools==1.62.3
+
+# Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code

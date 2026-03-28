@@ -1,17 +1,32 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
+# ── Pre-built binary pins to avoid 60-90 min compile on HF Spaces cpu-basic ──
+# grpcio (pulled by chromadb) compiles from C++ source if no wheel is found —
+# pinning to a version with official Linux ARM64/x86_64 wheels eliminates that.
+grpcio==1.62.3
+grpcio-tools==1.62.3
+
+# ── Core framework ────────────────────────────────────────────────────────────
 fastapi
 uvicorn[standard]
+
+# ── Data & Privacy ────────────────────────────────────────────────────────────
 redis
 duckdb
 diffprivlib
+
+# ── AI / ML ──────────────────────────────────────────────────────────────────
 sentence-transformers
+chromadb
+xgboost
+
+# ── Frontend & Viz ────────────────────────────────────────────────────────────
 streamlit
 numpy
 pandas
 plotly
 requests
+
+# ── LLM & Env ────────────────────────────────────────────────────────────────
 google-genai
 python-dotenv
-chromadb
-xgboost
