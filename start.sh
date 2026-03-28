@@ -1,9 +1,15 @@
 #!/bin/bash
-# Startup script for HF Spaces — runs FastAPI + Streamlit in one container
+# Startup script — works on both HF Spaces and Railway
 
 echo "=== Starting RMN Engine ==="
 
-# Start FastAPI backend in background (internal port 8000)
+# Railway injects $PORT for the public-facing service.
+# We use it for Streamlit (the public UI).
+# If not set (HF Spaces / local), default to 7860.
+STREAMLIT_PORT=${PORT:-7860}
+
+# FastAPI always runs on internal port 8000 (not exposed publicly)
+echo "Starting FastAPI backend on port 8000 (internal)..."
 python -m uvicorn src.api:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 echo "Backend PID: $BACKEND_PID"
@@ -18,10 +24,10 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
-# Start Streamlit on port 7860 (HF Spaces default exposed port)
-echo "Starting Streamlit on port 7860..."
+# Start Streamlit on $STREAMLIT_PORT (Railway uses PORT, HF Spaces uses 7860)
+echo "Starting Streamlit on port ${STREAMLIT_PORT}..."
 python -m streamlit run src/streamlit_app.py \
-    --server.port 7860 \
+    --server.port "${STREAMLIT_PORT}" \
     --server.address 0.0.0.0 \
     --server.headless true \
     --server.enableCORS false \

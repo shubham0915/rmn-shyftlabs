@@ -325,6 +325,12 @@ def root():
     return {"status": "ok", "service": "RMN Engine API"}
 
 
+@app.get("/healthz", tags=["health"])
+def healthz():
+    """Railway / K8s-compatible health check endpoint."""
+    return {"status": "ok", "service": "RMN Engine API"}
+
+
 @app.post("/track_event", tags=["events"])
 async def track_event(payload: EventPayload):
     """
