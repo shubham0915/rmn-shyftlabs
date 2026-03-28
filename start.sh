@@ -2,12 +2,11 @@
 # Startup script — works on HF Spaces, Railway, and locally
 
 echo "=== Starting RMN Engine ==="
-echo "  ENV: PORT=${PORT} (set by Railway, ignored — Streamlit always uses 7860)"
+echo "  ENV: PORT=${PORT} (Railway assigns, Streamlit will bind to this)"
 
-# Streamlit ALWAYS binds to 7860.
-# Railway must be configured to route to port 7860 in the dashboard.
-# (Railway's dynamic $PORT is ignored to avoid port mismatch 502s.)
-STREAMLIT_PORT=7860
+# Use Railway's $PORT — Railway routes public traffic AND runs health checks on this port.
+# If not set (local/HF), default to 7860.
+STREAMLIT_PORT=${PORT:-7860}
 
 # FastAPI runs on FIXED internal port 18000 — never conflicts with anything.
 API_PORT=18000
