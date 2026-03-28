@@ -131,34 +131,126 @@ async def _event_worker_loop():
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Startup progress logger
+# ---------------------------------------------------------------------------
+_TOTAL_STEPS = 7
+
+def _progress(step: int, label: str, note: str = "", elapsed: float = 0.0) -> None:
+    """Print a formatted progress line to the log."""
+    filled  = "█" * step
+    empty   = "░" * (_TOTAL_STEPS - step)
+    pct     = int(step / _TOTAL_STEPS * 100)
+    timing  = f"  ({elapsed:.1f}s)" if elapsed else ""
+    note_str = f"  » {note}" if note else ""
+    logger.info(
+        f"\n"
+        f"  ┌─────────────────────────────────────────────────┐\n"
+        f"  │  RMN ENGINE STARTUP  [{filled}{empty}] {pct:>3}%  Step {step}/{_TOTAL_STEPS}  │\n"
+        f"  │  ▶ {label:<43}│\n"
+        f"  └─────────────────────────────────────────────────┘{timing}{note_str}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Lifespan: DB init + embedding warmup
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("[Agent2] Starting up — initialising DB and embedding cache …")
-    
-    # 1. Init DuckDB (blocking I/O) in executor
+    boot_start = time.perf_counter()
+    logger.info(
+        "\n\n"
+        "  ╔═══════════════════════════════════════════════════╗\n"
+        "  ║        🛒  RMN ENGINE — BOOTING UP  🛒            ║\n"
+        "  ║  Privacy-Preserving Agentic Ad Serving Engine     ║\n"
+        "  ╚═══════════════════════════════════════════════════╝"
+    )
+
     loop = asyncio.get_event_loop()
+
+    # ── Step 1: DuckDB Init ──────────────────────────────────
+    _progress(0, "Initialising DuckDB Clean Room …", "Loading 2.7M Retailrocket events")
+    t = time.perf_counter()
     await loop.run_in_executor(None, init_db)
-    
-    # 2. Init PyTorch on the MAIN THREAD (critical on macOS: loading in executor deadlocks)
-    warmup()
-    
-    # 3. Train/Load XGBoost Model
+    _progress(1, "DuckDB Clean Room ✓", "Schema + CSV + Aggregates ready", time.perf_counter() - t)
+
+    # ── Step 2: Download embedding model if needed ───────────
+    _progress(1, "Checking embedding model cache …", "all-MiniLM-L6-v2 (may download ~80 MB on first run)")
+    t = time.perf_counter()
+    # warmup() handles this — we just log before and after
+    logger.info("  [Model] If downloading: this is a one-time ~80 MB download from HuggingFace …")
+
+    # ── Step 3: Load SentenceTransformer ────────────────────
+    _progress(2, "Loading SentenceTransformer model …", "all-MiniLM-L6-v2 on CPU")
+    t3 = time.perf_counter()
+    # warmup() calls get_model() then encode() then populates ChromaDB
+    from src.embeddings import get_model
+    get_model()   # load weights — this is the slow part on first boot
+    _progress(3, "SentenceTransformer loaded ✓", f"Model ready in {time.perf_counter()-t3:.1f}s", time.perf_counter() - t)
+
+    # ── Step 4: ChromaDB warmup + ad embedding ───────────────
+    _progress(3, "Building ChromaDB vector index …", "Embedding 42 ads into HNSW index")
+    t = time.perf_counter()
+    from src.embeddings import encode, get_collection
+    from src.config import SYNTHETIC_ADS
+    collection = get_collection()
+    if collection.count() == 0:
+        logger.info(f"  [ChromaDB] First run — embedding {len(SYNTHETIC_ADS)} ads …")
+        for i, ad in enumerate(SYNTHETIC_ADS, 1):
+            price_text = f" price {int(ad['price'])}" if ad.get("price") else ""
+            vec = encode(f"{ad['title']} {ad.get('desc', '')}{price_text}")
+            collection.add(
+                ids=[ad["ad_id"]],
+                embeddings=[vec],
+                metadatas=[{
+                    "title": ad["title"], "category": ad["category"],
+                    "ctr": float(ad["ctr"]),
+                    "price": float(ad["price"]) if ad.get("price") else 0.0,
+                    "desc": ad.get("desc", ""),
+                }]
+            )
+            if i % 10 == 0 or i == len(SYNTHETIC_ADS):
+                logger.info(f"  [ChromaDB] Embedded {i}/{len(SYNTHETIC_ADS)} ads …")
+    else:
+        logger.info(f"  [ChromaDB] Cache hit — {collection.count()} ads already indexed. Skipping.")
+    _progress(4, "ChromaDB vector index ✓", f"{collection.count()} ads indexed", time.perf_counter() - t)
+
+    # ── Step 5: XGBoost LTR model ───────────────────────────
+    _progress(4, "Loading XGBoost LTR model …", "Training on 10,000 synthetic interactions if first run")
+    t = time.perf_counter()
     train_and_save_model()
-    
-    # 4. Redis check
+    _progress(5, "XGBoost LTR model ✓", "p(click) ranker ready", time.perf_counter() - t)
+
+    # ── Step 6: Redis / event queue ──────────────────────────
+    _progress(5, "Connecting to Redis event queue …", "Falls back to in-memory if Redis absent")
+    t = time.perf_counter()
     _get_redis()
-    
-    # 4. Start Event Ingestion Worker
-    # Store task reference to avoid garbage collection
+    redis_status = "Redis connected ✓" if _redis_client else "In-memory queue (Redis not available)"
+    _progress(6, redis_status, "", time.perf_counter() - t)
+
+    # ── Step 7: Background worker ────────────────────────────
+    _progress(6, "Starting async event ingestion worker …", "Flushes events to DuckDB every 5s")
     worker_task = asyncio.create_task(_event_worker_loop())
-    
-    logger.info("[Agent2] Startup complete.")
-    yield
-    
+    _progress(7, "Background worker started ✓", "Listening for events")
+
+    # ── READY banner ─────────────────────────────────────────
+    total_elapsed = time.perf_counter() - boot_start
+    logger.info(
+        f"\n\n"
+        f"  ╔═══════════════════════════════════════════════════╗\n"
+        f"  ║   ✅  RMN ENGINE IS LIVE AND READY!               ║\n"
+        f"  ║                                                   ║\n"
+        f"  ║   🌐  Streamlit UI  → http://localhost:7860       ║\n"
+        f"  ║   ⚙️   API Docs      → http://localhost:8000/docs  ║\n"
+        f"  ║   📊  Total boot time: {total_elapsed:>5.1f}s                  ║\n"
+        f"  ╚═══════════════════════════════════════════════════╝\n"
+    )
+
+    yield   # ← server is running here
+
     worker_task.cancel()
-    logger.info("[Agent2] Shutdown.")
+    logger.info("  [RMN] Shutting down gracefully. Goodbye.")
+
 
 
 # ---------------------------------------------------------------------------
