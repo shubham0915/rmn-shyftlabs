@@ -31,7 +31,10 @@ RUN mkdir -p data
 # Make startup script executable
 RUN chmod +x start.sh
 
-# HF Spaces exposes port 7860
+# Tell Railway (and local/HF runs) that the public port is always 7860.
+# Railway reads ENV PORT and routes public traffic to this port.
+# Our start.sh reads $PORT for Streamlit — they must match.
+ENV PORT=7860
 EXPOSE 7860
 
 CMD ["./start.sh"]
