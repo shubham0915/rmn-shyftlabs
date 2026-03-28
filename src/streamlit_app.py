@@ -317,7 +317,7 @@ with tab2:
             font_color="#e2e8f0", xaxis_title="Session #", yaxis_title="Lift %",
             margin=dict(t=10, b=10),
         )
-        st.plotly_chart(fig_lift, use_container_width=True)
+        st.plotly_chart(fig_lift, width='stretch')
 
         st.markdown("#### Latency Distribution (ms)")
         fig_lat = px.histogram(
@@ -331,7 +331,7 @@ with tab2:
             font_color="#e2e8f0", xaxis_title="Latency (ms)", yaxis_title="Count",
             margin=dict(t=10, b=10), showlegend=False,
         )
-        st.plotly_chart(fig_lat, use_container_width=True)
+        st.plotly_chart(fig_lat, width='stretch')
 
         if n_events > 0:
             latest_lift = history[-1].get("ctr_lift_pct", 0)
@@ -348,7 +348,7 @@ with tab2:
                 font_color="#e2e8f0", yaxis_title="Expected CTR (%)",
                 margin=dict(t=10, b=10), showlegend=False,
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width='stretch')
 
 
 # ============================================================
@@ -387,7 +387,7 @@ with tab3:
         paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
         margin=dict(t=20, b=20), height=300,
     )
-    st.plotly_chart(fig_gauge, use_container_width=True)
+    st.plotly_chart(fig_gauge, width='stretch')
 
     st.markdown(f"""
 **Budget used:** `{eps_used:.2f} ε`  
@@ -438,7 +438,7 @@ with tab4:
 ```mermaid
 graph TD
     A[🌐 User Context] --> B[ChromaDB Vector Retrieval]
-    A --> C[Groq LLM Persona Copygen]
+    A --> C[Gemini Flash Agentic Copygen]
     B --> D[XGBoost ML Ranking Engine]
     C --> E[FastAPI / Streamlit Ad Display]
     D --> E
@@ -465,7 +465,7 @@ graph TD
 | Data Clean Room | DuckDB | OLAP Performance on 2.7M rows |
 | Vector Engine | **ChromaDB** | HNSW for 10,000+ ad catalog scale |
 | ML Ranking | **XGBoost** | Re-ranking for `p(click)` probability |
-| Agentic LLM | **Groq (Llama 3)** | Sub-second personalized copywriting |
+| Agentic LLM | **Gemini 1.5 Flash** | Sub-second personalized copywriting |
 | Embeddings | sentence-transformers | CPU-efficient `all-MiniLM-L6-v2` |
 | Privacy Math | diffprivlib | Persistent DP budget tracking |
 | Dataset | Retailrocket (2.7M) | Real-world e-commerce event stream |
