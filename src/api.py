@@ -16,8 +16,10 @@ Architecture:
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# NOTE: Do NOT set HF_HUB_OFFLINE=1 here.
+# On Hugging Face Spaces the model is not pre-cached, so it must be downloaded
+# at first startup. Keeping online mode allows SentenceTransformer to fetch
+# all-MiniLM-L6-v2 on first boot.
 
 import time
 import uuid
@@ -189,7 +191,7 @@ class EventPayload(BaseModel):
 class RankedAd(BaseModel):
     ad_id:       str
     title:       str
-    copy:        str
+    ad_copy:     str          # renamed from 'copy' — avoids shadowing BaseModel.copy()
     category:    str
     ctr:         float
     price:       float | None = None
@@ -201,7 +203,7 @@ class RankedAd(BaseModel):
 class AdResponse(BaseModel):
     ad_id:            str
     title:            str
-    copy:             str
+    ad_copy:          str          # renamed from 'copy' — avoids shadowing BaseModel.copy()
     category:         str
     ctr:              float
     price:            float | None = None
@@ -310,7 +312,7 @@ async def get_ad(
     return AdResponse(
         ad_id        = best["ad_id"],
         title        = best["title"],
-        copy         = best["copy"],
+        ad_copy      = best["copy"],
         category     = best["category"],
         ctr          = best["ctr"],
         price        = best.get("price"),
@@ -323,7 +325,7 @@ async def get_ad(
             RankedAd(
                 ad_id       = a["ad_id"],
                 title       = a["title"],
-                copy        = a["copy"],
+                ad_copy     = a["copy"],
                 category    = a["category"],
                 ctr         = a["ctr"],
                 price       = a.get("price"),

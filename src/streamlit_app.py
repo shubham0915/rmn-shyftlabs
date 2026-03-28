@@ -243,7 +243,7 @@ with tab1:
                 st.markdown(f"""
 <div class="ad-card">
     <div class="ad-title">#{idx} · 📢 {item.get('title', 'Ad')}</div>
-    <div class="ad-copy">"{item.get('copy', '')}"</div>
+    <div class="ad-copy">"{item.get('ad_copy', '')}"</div>
     <div class="ad-badges">
         <span class="badge">#{item.get('category','').upper()}</span>
         {price_badge}

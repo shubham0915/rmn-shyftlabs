@@ -11,7 +11,7 @@ numpy
 pandas
 plotly
 requests
-google-generativeai
+google-genai
 python-dotenv
 chromadb
 xgboost
