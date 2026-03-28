@@ -18,7 +18,7 @@ COPY . .
 
 # Pre-download the embedding model at BUILD time so runtime startup is fast
 # (avoids a 30-60s cold start on first request)
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+# RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Create data directory (DuckDB will be created here at runtime)
 RUN mkdir -p data
