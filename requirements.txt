@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 fastapi
 uvicorn[standard]
 redis
@@ -9,7 +11,7 @@ numpy
 pandas
 plotly
 requests
-groq
+google-generativeai
 python-dotenv
 chromadb
 xgboost

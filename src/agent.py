@@ -1,36 +1,40 @@
 """
 agent.py — Agentic Personalised Copy Generation
-Agent 5: Creative Copywriter (Groq LLM Layer)
+Agent 5: Creative Copywriter (Gemini LLM Layer)
 
-This module uses Groq (Llama 3 8B) to generate dynamic, context-aware 
-ad copy in real-time (<100ms latency).
+This module uses Google Gemini (Gemini 1.5 Flash) to generate dynamic, context-aware 
+ad copy in real-time.
 """
 
 import logging
 from functools import lru_cache
 from typing import Optional
 
-from src.config import GROQ_API_KEY
+from src.config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
 
-# Initialize Groq client only if key is available
+# Initialize Gemini client only if key is available
 try:
-    from groq import Groq
-    _client = Groq(api_key=GROQ_API_KEY)
+    import google.generativeai as genai
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        _model = genai.GenerativeModel('gemini-1.5-flash', system_instruction="You are a concise ad copywriter. Output exactly one short sentence connecting the product to the user's context. No quotes.")
+    else:
+        _model = None
 except Exception as e:
-    logger.warning(f"Failed to initialize Groq client: {e}. Will use fallback copy generation.")
-    _client = None
+    logger.warning(f"Failed to initialize Gemini client: {e}. Will use fallback copy generation.")
+    _model = None
 
 # We cache up to 1024 unique (ad, context) combinations in memory 
 # to ensure zero latency and zero cost for repeated ad servings.
 @lru_cache(maxsize=1024)
 def generate_personalized_copy(ad_title: str, ad_desc: str, context: str) -> str:
     """
-    Calls Groq's Llama 3 8B model to generate a highly personalized 1-liner ad copy.
+    Calls Gemini's Flash model to generate a highly personalized 1-liner ad copy.
     Falls back to a fast rule-based method if the API fails or is unavailable.
     """
-    if not _client:
+    if not _model:
         return _fallback_copy(ad_title, ad_desc, context)
 
     prompt = f"""
@@ -46,24 +50,15 @@ Do not include quotes, pleasantries, or anything else. Just the pure ad copy.
     """.strip()
 
     try:
-        completion = _client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a concise ad copywriter. Output exactly one short sentence connecting the product to the user's context. No quotes."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            model="llama-3.1-8b-instant",
-            temperature=0.7,
-            max_tokens=30,
-            timeout=1.5 # Strict 1.5s timeout so we never block ad serving for too long
+        response = _model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.7,
+                max_output_tokens=30,
+            )
         )
         
-        copy = completion.choices[0].message.content.strip().strip('"').strip("'")
+        copy = response.text.strip().strip('"').strip("'")
         
         # Safety check: if the model hallucinated a long response, fallback to something shorter
         if len(copy.split()) > 15:
@@ -72,7 +67,7 @@ Do not include quotes, pleasantries, or anything else. Just the pure ad copy.
         return f"✨ {copy}"
 
     except Exception as e:
-        logger.warning(f"[Groq Agent Failed] {e}. Using fallback.")
+        logger.warning(f"[Gemini Agent Failed] {e}. Using fallback.")
         return _fallback_copy(ad_title, ad_desc, context)
 
 
