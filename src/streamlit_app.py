@@ -31,7 +31,7 @@ except ModuleNotFoundError:
         sys.path.insert(0, ROOT_DIR)
     from src.config import RETAILER_PAGES, API_PORT, EPSILON_MAX
 
-API_BASE = f"http://127.0.0.1:{API_PORT}"
+API_BASE = f"http://127.0.0.1:18000"
 
 # ---------------------------------------------------------------------------
 # API helpers
