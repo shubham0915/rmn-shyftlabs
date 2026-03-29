@@ -1,19 +1,11 @@
----
-title: Privacy-Preserving Agentic RMN Engine
-emoji: 🛒
-colorFrom: purple
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
----
+
 
 # 🛒 Privacy-Preserving Agentic Retail Media Network (RMN) Engine
 
 > **Built for ShyftLabs AdTech**  
 > Real-time on-site advertising with Differential Privacy (DuckDB), Vector Search (ChromaDB), **XGBoost ML Ranking**, and **Agentic LLM Copywriting** (Gemini Flash).
 
-[![Live Demo](https://img.shields.io/badge/Demo-HuggingFace-FF9D00?logo=huggingface)](https://huggingface.co/spaces/shubhamkya/rmn-engine)
+[![Live Demo](https://img.shields.io/badge/Demo-Railway-0B0D0E?logo=railway)](https://rmn-engine.up.railway.app)
 [![Privacy](https://img.shields.io/badge/Privacy-ε≤0.9-065f46)](https://diffprivlib.readthedocs.io)
 [![Latency](https://img.shields.io/badge/Latency-<150ms-0284c7)](http://localhost:8000/docs)
 [![Python](https://img.shields.io/badge/Python-3.11-3776ab?logo=python)](https://python.org)
@@ -276,22 +268,22 @@ flowchart LR
 
 ## 🐳 Diagram 6 — Deployment Architecture
 
-**How the project runs inside a single Docker container on Hugging Face.**
+**How the project runs inside a single Docker container on Railway.**
 
 ```mermaid
 flowchart TB
-    subgraph HF["☁️ Hugging Face Spaces (cpu-basic)"]
+    subgraph RAILWAY["☁️ Railway (Docker Service)"]
         subgraph DOCKER["🐳 Docker Container (python:3.11-slim)"]
             subgraph STARTUP["start.sh"]
-                S1["1. Start Uvicorn\n(background &)"]
-                S2["2. Health-poll\n/  endpoint\n(max 60s)"]
-                S3["3. Start Streamlit\n(foreground)"]
+                S1["1. Start Uvicorn\n(background &)\nport 18000 (internal)"]
+                S2["2. Health-poll\n/  endpoint\n(max 90s)"]
+                S3["3. Start Streamlit\n(foreground)\nport=$PORT"]
                 S1 --> S2 --> S3
             end
 
             subgraph PROCS["Running Processes"]
-                UVICORN["uvicorn src.api:app\n0.0.0.0:8000\n(internal)"]
-                STREAMLIT["streamlit run\nsrc/streamlit_app.py\n0.0.0.0:7860\n(public)"]
+                UVICORN["uvicorn src.api:app\n127.0.0.1:18000\n(internal only)"]
+                STREAMLIT["streamlit run\nsrc/streamlit_app.py\n0.0.0.0:$PORT\n(public)"]
             end
 
             subgraph VOLUMES["Data (ephemeral)"]
@@ -302,16 +294,16 @@ flowchart TB
             end
         end
 
-        PORT["EXPOSE 7860\n(HF public endpoint)"]
+        PORT_ENV["$PORT env var\n(Railway-assigned)\nHealth check + public traffic"]
     end
 
     subgraph LOCAL["💻 Local Dev"]
-        SH["./start.sh\n(same script)"]
+        SH["./start.sh\n(PORT defaults to 7860)"]
         LOCAL_UI["http://localhost:7860"]
-        LOCAL_API["http://localhost:8000/docs"]
+        LOCAL_API["http://localhost:18000/docs"]
     end
 
-    STREAMLIT -->|"HTTP calls\n127.0.0.1:8000"| UVICORN
+    STREAMLIT -->|"HTTP calls\n127.0.0.1:18000"| UVICORN
     UVICORN --> DUCKDB_F
     UVICORN --> CHROMA_F
     UVICORN --> XGB_F
@@ -336,7 +328,7 @@ flowchart TB
 | Differential Privacy | **diffprivlib** | IBM Laplace mechanism, persistent daily ε budget |
 | Dataset | **Retailrocket (Kaggle)** | 2.7M real e-commerce events |
 | Frontend | **Streamlit** | Live demo UI with dark glassmorphism theme |
-| Deployment | **Docker + HF Spaces** | Single-container CPU deployment |
+| Deployment | **Docker + Railway** | Single-container deployment with auto-scaling & $PORT routing |
 
 ---
 
@@ -369,7 +361,7 @@ $$\mathcal{M}(x) = x + \text{Lap}\!\left(\frac{\Delta f}{\varepsilon}\right)$$
 
 **Step 1 — Clone & install dependencies**
 ```bash
-git clone https://huggingface.co/spaces/shubhamkya/rmn-engine
+git clone https://github.com/shubhamkya/rmn-engine
 cd rmn-engine
 pip install -r requirements.txt
 ```
@@ -413,7 +405,7 @@ rmn-engine/
 │   ├── agent.py                 # ✨ Gemini Flash agentic copy generation
 │   └── streamlit_app.py         # 🖥️ 4-tab Streamlit dashboard
 │
-├── Dockerfile                   # 🐳 HF Spaces Docker container
+├── Dockerfile                   # 🐳 Railway Docker container
 ├── start.sh                     # 🚀 Startup orchestration script
 ├── requirements.txt             # 📦 Python dependencies (CPU-optimized)
 └── README.md

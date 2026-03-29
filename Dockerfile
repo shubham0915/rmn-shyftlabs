@@ -1,5 +1,5 @@
-# ── Hugging Face Spaces — Docker image ───────────────────────────────────────
-# Runs both FastAPI (port 8000, internal) + Streamlit (port 7860, public).
+# ── Railway — Docker image ────────────────────────────────────────────────────
+# Runs FastAPI (port 18000, internal) + Streamlit (public, binds to $PORT).
 FROM python:3.11-slim
 
 # System deps

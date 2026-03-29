@@ -1,5 +1,5 @@
 #!/bin/bash
-# Startup script — works on HF Spaces, Railway, and locally
+# Startup script — works on Railway and locally
 
 echo "=== Starting RMN Engine ==="
 echo "  ENV: PORT=${PORT} (Railway assigns, Streamlit will bind to this)"
