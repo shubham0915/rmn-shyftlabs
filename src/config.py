@@ -404,3 +404,31 @@ SYNTHETIC_ADS = [
         "desc": "Parka jacket premium insulated hooded coat for maximum warmth protection."
     }
 ]
+
+# ---------------------------------------------------------------------------
+# Advertiser Catalogue — maps advertisers to their categories & ad IDs
+# Used by Flow 2: /advertiser/stats endpoint (Nike's view)
+# ---------------------------------------------------------------------------
+ADVERTISER_CATALOGUE = {
+    "Nike": {
+        "category": "shoes",
+        "ads": ["A1", "A5", "A9", "A13", "A14", "A15", "A16", "A17"],
+        "color": "#f97316",
+    },
+    "Samsung": {
+        "category": "electronics",
+        "ads": ["A2", "A6", "A10", "A19", "A20", "A21", "A22", "A23", "A24"],
+        "color": "#3b82f6",
+    },
+    "FabIndia": {
+        "category": "ethnic",
+        "ads": ["A3", "A7", "A25", "A26", "A27", "A28", "A29", "A30"],
+        "color": "#f59e0b",
+    },
+    "Lakme": {
+        "category": "skincare",
+        "ads": ["A4", "A8", "A31", "A32", "A33", "A34", "A35", "A36"],
+        "color": "#ec4899",
+    },
+}
+

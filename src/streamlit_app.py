@@ -23,13 +23,13 @@ import plotly.express as px
 import numpy as np
 
 try:
-    from src.config import RETAILER_PAGES, API_PORT, EPSILON_MAX
+    from src.config import RETAILER_PAGES, API_PORT, EPSILON_MAX, ADVERTISER_CATALOGUE
 except ModuleNotFoundError:
     # Fallback for direct `streamlit run src/streamlit_app.py` launches
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if ROOT_DIR not in sys.path:
         sys.path.insert(0, ROOT_DIR)
-    from src.config import RETAILER_PAGES, API_PORT, EPSILON_MAX
+    from src.config import RETAILER_PAGES, API_PORT, EPSILON_MAX, ADVERTISER_CATALOGUE
 
 API_BASE = f"http://127.0.0.1:18000"
 
@@ -150,8 +150,8 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["🎯 Live Demo", "📊 Metrics Dashboard", "🔐 Privacy Report", "🏛 Architecture"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["🎯 Live Demo", "📊 Metrics Dashboard", "🔐 Privacy Report", "🏛 Architecture", "🏢 Advertiser View"]
 )
 
 # ============================================================
@@ -475,3 +475,230 @@ graph TD
     col1.metric("Dataset Events", "2.7M")
     col2.metric("Target Latency", "<100 ms")
     col3.metric("Privacy Budget", "ε ≤ 0.9")
+
+
+# ============================================================
+# TAB 5: ADVERTISER VIEW (Nike / Samsung / FabIndia / Lakme)
+# ============================================================
+with tab5:
+    st.markdown("### 🏢 Advertiser Campaign Dashboard")
+    st.markdown(
+        """<div style='background:rgba(99,102,241,0.1); border:1px solid rgba(99,102,241,0.4);
+        border-radius:10px; padding:1rem; margin-bottom:1rem; font-size:0.9rem; color:#94a3b8;'>
+        <b>How this works:</b> You are viewing the system from an <b>Advertiser's perspective</b>.
+        When Nike queries campaign stats, Myntra's Clean Room returns <b>DP-noisy aggregates</b>.
+        Nike sees useful trends but <b>cannot identify any individual user</b>.
+        Each advertiser has their <b>own isolated daily epsilon budget (0.9ε)</b>.
+        </div>""",
+        unsafe_allow_html=True
+    )
+
+    adv_col_l, adv_col_r = st.columns([1, 1.6], gap="large")
+
+    with adv_col_l:
+        st.markdown("**Select Your Brand**")
+        selected_advertiser = st.selectbox(
+            "Advertiser",
+            options=list(ADVERTISER_CATALOGUE.keys()),
+            label_visibility="collapsed",
+            key="adv_selector"
+        )
+        adv_info = ADVERTISER_CATALOGUE[selected_advertiser]
+
+        st.markdown(
+            f"""<div style='background:rgba(0,0,0,0.3); border-radius:8px; padding:0.8rem;
+            margin-bottom:1rem; font-size:0.85rem;'>
+            📦 <b>Category:</b> {adv_info['category'].title()}<br>
+            🎯 <b>Active Ads:</b> {', '.join(adv_info['ads'][:4])} + {len(adv_info['ads'])-4} more
+            </div>""",
+            unsafe_allow_html=True
+        )
+
+        query_clicked = st.button(
+            f"📡 Query Campaign Stats as {selected_advertiser}",
+            use_container_width=True,
+            type="primary",
+            key="adv_query_btn"
+        )
+
+        st.markdown("---")
+        st.markdown("**What this API call does:**")
+        st.code(
+            f"GET /advertiser/stats?advertiser_id={selected_advertiser}",
+            language="bash"
+        )
+        st.markdown("""
+- ✅ Returns **noisy** views, carts, purchases
+- 🔐 Burns **0.3ε** from YOUR budget only
+- 🚫 Other advertisers' budgets are **unaffected**
+- 💾 Budget persists across server restarts
+        """)
+
+    with adv_col_r:
+        if "adv_history" not in st.session_state:
+            st.session_state.adv_history = {}    # { advertiser_id: [stat_dicts] }
+
+        if query_clicked:
+            with st.spinner(f"Querying Myntra Clean Room as {selected_advertiser}..."):
+                try:
+                    resp = requests.get(
+                        f"{API_BASE}/advertiser/stats",
+                        params={"advertiser_id": selected_advertiser},
+                        timeout=10
+                    )
+                    if resp.status_code == 429:
+                        st.error(
+                            f"🚫 **{selected_advertiser}'s privacy budget is exhausted for today!**\n\n"
+                            f"This prevents over-querying and protects Myntra's users from re-identification attacks.\n"
+                            f"Budget resets tomorrow."
+                        )
+                    elif resp.status_code == 200:
+                        stat = resp.json()
+                        if selected_advertiser not in st.session_state.adv_history:
+                            st.session_state.adv_history[selected_advertiser] = []
+                        st.session_state.adv_history[selected_advertiser].append(stat)
+                    else:
+                        st.error(f"API error {resp.status_code}: {resp.text}")
+                except Exception as e:
+                    st.error(f"Request failed: {e}")
+
+        adv_data = st.session_state.get("adv_history", {}).get(selected_advertiser, [])
+
+        if adv_data:
+            latest = adv_data[-1]
+            color  = adv_info.get("color", "#7c3aed")
+
+            # ── Stat Cards ──────────────────────────────────────────────
+            st.markdown("#### 📊 Campaign Stats (DP-Noisy)")
+            s1, s2, s3 = st.columns(3)
+            s1.metric("👁️ Views (noisy)",     f"{latest['noisy_views']:,}")
+            s2.metric("🛒 Cart Adds (noisy)", f"{latest['noisy_carts']:,}")
+            s3.metric("💳 Purchases (noisy)", f"{latest['noisy_purchases']:,}")
+
+            r1, r2 = st.columns(2)
+            r1.metric("Cart Rate",     f"{latest['cart_rate_pct']:.2f}%")
+            r2.metric("Purchase Rate", f"{latest['purchase_rate_pct']:.2f}%")
+
+            # ── DP Notice ───────────────────────────────────────────────
+            st.markdown(
+                f"""<div style='background:rgba(16,185,129,0.1); border:1px solid #065f46;
+                border-radius:8px; padding:0.8rem; margin:0.8rem 0; font-size:0.85rem;'>
+                🔐 <b>Differential Privacy Applied</b> — Laplace noise (ε=0.1) added to each value.<br>
+                Nike sees <b>approximate trends</b>, not exact counts. Individual users are protected.
+                </div>""",
+                unsafe_allow_html=True
+            )
+
+            # ── Epsilon Budget Gauge ─────────────────────────────────────
+            st.markdown(f"#### 🔐 {selected_advertiser}'s Privacy Budget")
+            eps_used = latest["epsilon_used"]
+            eps_max  = latest["epsilon_max"]
+            eps_rem  = latest["epsilon_remaining"]
+
+            fig_adv_gauge = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=eps_used,
+                title={"text": f"{selected_advertiser}'s ε Budget Used Today",
+                       "font": {"color": "#e2e8f0"}},
+                gauge={
+                    "axis": {"range": [0, eps_max], "tickcolor": "#94a3b8"},
+                    "bar":  {"color": color},
+                    "bgcolor": "rgba(0,0,0,0)",
+                    "steps": [
+                        {"range": [0, 0.4 * eps_max], "color": "#064e3b"},
+                        {"range": [0.4*eps_max, 0.8*eps_max], "color": "#78350f"},
+                        {"range": [0.8*eps_max, eps_max],     "color": "#7f1d1d"},
+                    ],
+                    "threshold": {
+                        "line": {"color": "#ef4444", "width": 4},
+                        "value": eps_max,
+                    },
+                },
+                number={"suffix": f" / {eps_max}", "font": {"color": "#c4b5fd"}},
+            ))
+            fig_adv_gauge.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
+                margin=dict(t=30, b=10), height=240,
+            )
+            st.plotly_chart(fig_adv_gauge, use_container_width=True)
+
+            bc1, bc2, bc3 = st.columns(3)
+            bc1.metric("ε Used",      f"{eps_used:.2f}")
+            bc2.metric("ε Remaining", f"{eps_rem:.2f}")
+            bc3.metric("Queries Left", f"{int(eps_rem / 0.3)}")
+
+            # ── Query History ────────────────────────────────────────────
+            if len(adv_data) > 1:
+                st.markdown("#### 📈 Query History")
+                eps_history = [d["epsilon_used"] for d in adv_data]
+                view_history = [d["noisy_views"] for d in adv_data]
+
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Scatter(
+                    y=eps_history, mode="lines+markers",
+                    name="ε Used",
+                    line=dict(color=color, width=2.5),
+                    marker=dict(size=7),
+                    yaxis="y1"
+                ))
+                fig_hist.add_trace(go.Bar(
+                    y=view_history, name="Noisy Views",
+                    marker_color="rgba(99,102,241,0.4)",
+                    yaxis="y2"
+                ))
+                fig_hist.add_hline(y=eps_max, line_dash="dash", line_color="#ef4444",
+                                   annotation_text="Budget Limit",
+                                   annotation_position="top right")
+                fig_hist.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font_color="#e2e8f0",
+                    xaxis_title="Query #",
+                    yaxis=dict(title="ε Burned", side="left"),
+                    yaxis2=dict(title="Noisy Views", side="right", overlaying="y"),
+                    margin=dict(t=10, b=10),
+                    legend=dict(orientation="h"),
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+            # ── All Advertisers Budget Comparison ────────────────────────
+            st.markdown("#### 🏁 All Advertisers Budget Status")
+            all_adv_data = []
+            for adv_name, adv_hist in st.session_state.adv_history.items():
+                if adv_hist:
+                    last = adv_hist[-1]
+                    all_adv_data.append({
+                        "name": adv_name,
+                        "eps_used": last["epsilon_used"],
+                        "color": ADVERTISER_CATALOGUE[adv_name]["color"]
+                    })
+
+            if all_adv_data:
+                fig_comp = go.Figure(go.Bar(
+                    x=[d["name"] for d in all_adv_data],
+                    y=[d["eps_used"] for d in all_adv_data],
+                    marker_color=[d["color"] for d in all_adv_data],
+                    text=[f"{d['eps_used']:.2f}ε" for d in all_adv_data],
+                    textposition="auto",
+                ))
+                fig_comp.add_hline(y=EPSILON_MAX, line_dash="dash", line_color="#ef4444",
+                                   annotation_text="Daily Limit",
+                                   annotation_position="top right")
+                fig_comp.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font_color="#e2e8f0",
+                    yaxis_title="ε Budget Used",
+                    margin=dict(t=10, b=10),
+                    showlegend=False
+                )
+                st.plotly_chart(fig_comp, use_container_width=True)
+            else:
+                st.info("Query multiple advertisers above to compare their budget usage.")
+
+        else:
+            st.info(
+                f"👆 Click **'Query Campaign Stats as {selected_advertiser}'** to simulate "
+                f"{selected_advertiser} calling Myntra's advertiser API."
+            )
+

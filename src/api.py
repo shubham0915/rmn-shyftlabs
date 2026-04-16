@@ -36,6 +36,8 @@ from pydantic import BaseModel
 from src.config import REDIS_HOST, REDIS_PORT, REDIS_DB, STREAM_KEY
 from src.clean_room import (
     init_db, get_all_ads, get_dp_category_stats,
+    get_raw_category_stats,
+    get_advertiser_stats, get_advertiser_epsilon,
     simulate_ctr_lift, get_epsilon_used, flush_events
 )
 from src.embeddings import warmup
@@ -307,6 +309,20 @@ class AdResponse(BaseModel):
     top_ads:          list[RankedAd] = []
 
 
+class AdvertiserStatsResponse(BaseModel):
+    advertiser_id:      str
+    category:           str
+    noisy_views:        int
+    noisy_carts:        int
+    noisy_purchases:    int
+    cart_rate_pct:      float
+    purchase_rate_pct:  float
+    epsilon_used:       float
+    epsilon_remaining:  float
+    epsilon_max:        float
+    dp_noise_applied:   bool
+
+
 class MetricsResponse(BaseModel):
     epsilon_used:     float
     epsilon_max:      float
@@ -375,8 +391,9 @@ async def get_ad(
     logger.info(f"  -> get_all_ads took {(time.perf_counter() - t_step)*1000:.1f}ms")
     
     t_step = time.perf_counter()
-    dp_stats = await loop.run_in_executor(None, lambda: _safe_dp_stats())
-    logger.info(f"  -> _safe_dp_stats took {(time.perf_counter() - t_step)*1000:.1f}ms")
+    # Flow 1 — internal ad serving: use raw stats (no epsilon cost, user is not a threat)
+    raw_stats = await loop.run_in_executor(None, get_raw_category_stats)
+    logger.info(f"  -> get_raw_category_stats took {(time.perf_counter() - t_step)*1000:.1f}ms [NO epsilon burned]")
 
     if not ads:
         raise HTTPException(status_code=503, detail="Ad catalogue unavailable")
@@ -384,7 +401,7 @@ async def get_ad(
     logger.info("  -> Starting rank_ads (PyTorch inference)")
     t_step = time.perf_counter()
     # Rank (Running synchronously on Main Thread prevents PyTorch thread deadlocks on macOS)
-    ranked = rank_ads(page_text, ads, dp_stats)
+    ranked = rank_ads(page_text, ads, raw_stats)
     logger.info(f"  -> rank_ads took {(time.perf_counter() - t_step)*1000:.1f}ms")
 
     if not ranked:
@@ -456,6 +473,50 @@ async def metrics():
         lift_pct         = lift["lift_pct"],
         event_queue_size = len(_event_queue),
     )
+
+
+# ---------------------------------------------------------------------------
+# Advertiser Stats Endpoint (Flow 2 — Nike queries Myntra's Clean Room)
+# ---------------------------------------------------------------------------
+@app.get("/advertiser/stats", response_model=AdvertiserStatsResponse, tags=["advertiser"])
+async def advertiser_stats(
+    advertiser_id: str = "Nike",
+    retailer:      str = "Myntra",
+):
+    """
+    Flow 2 — Advertiser-Facing API.
+
+    Nike (or any advertiser) calls this to get campaign performance stats.
+    - Returns DP-NOISY aggregate data (views, carts, purchases)
+    - Burns from Nike's OWN daily epsilon budget (isolated from other advertisers)
+    - Hard-blocks when Nike's budget is exhausted (resets next day)
+
+    This is the correct place for Differential Privacy to be applied.
+    It protects Myntra's users from being re-identified by Nike.
+    """
+    from src.config import ADVERTISER_CATALOGUE
+    loop = asyncio.get_event_loop()
+
+    if advertiser_id not in ADVERTISER_CATALOGUE:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Advertiser '{advertiser_id}' not found. "
+                   f"Valid advertisers: {list(ADVERTISER_CATALOGUE.keys())}"
+        )
+
+    category = ADVERTISER_CATALOGUE[advertiser_id]["category"]
+
+    try:
+        result = await loop.run_in_executor(
+            None, get_advertiser_stats, advertiser_id, category
+        )
+        logger.info(
+            f"[AdvertiserAPI] {advertiser_id} queried stats. "
+            f"ε={result['epsilon_used']:.2f}/{result['epsilon_max']}"
+        )
+        return AdvertiserStatsResponse(**result)
+    except RuntimeError as e:
+        raise HTTPException(status_code=429, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

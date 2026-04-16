@@ -2,7 +2,7 @@
 
 # 🛒 Privacy-Preserving Agentic Retail Media Network (RMN) Engine
 
-> **Built for ShyftLabs AdTech**  
+> **Built for ShyftLabs AdTech**
 > Real-time on-site advertising with Differential Privacy (DuckDB), Vector Search (ChromaDB), **XGBoost ML Ranking**, and **Agentic LLM Copywriting** (Gemini Flash).
 
 [![Live Demo](https://img.shields.io/badge/Demo-Railway-0B0D0E?logo=railway)](https://rmn-engine.up.railway.app)
@@ -15,7 +15,7 @@
 
 ## 🎯 Business Problem & ShyftLabs Alignment
 
-Retailers (Myntra, Nykaa, etc.) want to show **personalised ads on their own website** without sending raw user data to advertisers. ShyftLabs solves this with a **Retail Media Network (RMN)** architecture — a Data Clean Room that keeps first-party data private while still enabling smart ad targeting.
+Retailers (Myntra, Nykaa, etc.) want to show **personalised ads on their own website** without sending raw user data to advertisers. ShyftLabs solves this with a **Retail Media Network (RMN)** architecture — a Data Clean Room that keeps first-party data private while enabling smart ad targeting.
 
 | ShyftLabs Real World | This Project Architecture |
 |---|---|
@@ -24,38 +24,70 @@ Retailers (Myntra, Nykaa, etc.) want to show **personalised ads on their own web
 | Contextual / Semantic match | **ChromaDB** Vector Engine (`all-MiniLM-L6-v2`) |
 | Real-time CTR Prediction | **XGBoost** Learning-to-Rank (LTR) |
 | Ad Copy Personalization | **Gemini 1.5 Flash** Agentic generation |
+| Advertiser Reporting | **Per-advertiser ε budget** isolated per brand |
+
+---
+
+## 🏗️ The Two Flows — Core Architecture Concept
+
+This system handles **two completely separate flows** that must never be confused:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  FLOW 1 — Ad Serving (User Side)                                │
+│                                                                  │
+│  User browses Myntra → RMN Engine picks best ad → User sees ad  │
+│  Uses: get_raw_category_stats()  ← NO epsilon burned            │
+│  Why: The user is not a threat. Stats stay internal.            │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  FLOW 2 — Advertiser Reporting (Nike Side)                      │
+│                                                                  │
+│  Nike queries Myntra → Clean Room returns NOISY stats → Nike    │
+│  Uses: get_advertiser_stats()    ← Burns Nike's own ε budget    │
+│  Why: Nike IS a threat. DP prevents user re-identification.     │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## 🗺️ Diagram 1 — Master System Architecture
 
-**The complete end-to-end picture: every component and how they connect.**
+**The complete end-to-end picture: both flows, every component.**
 
 ```mermaid
 flowchart TB
-    subgraph USER["👤 User / Browser"]
+    subgraph USERS["👤 User / Browser (Flow 1)"]
         UI["🖥️ Streamlit UI\n(port 7860)"]
     end
 
-    subgraph API["⚡ FastAPI Backend (port 8000)"]
+    subgraph ADVERTISERS["🏢 Advertiser / Nike (Flow 2)"]
+        ADV["📡 GET /advertiser/stats\n(Nike's API call)"]
+    end
+
+    subgraph API["⚡ FastAPI Backend (port 18000)"]
         direction TB
-        EP_AD["/get_ad\n(GET)"]
-        EP_TRACK["/track_event\n(POST)"]
+        EP_AD["/get_ad\n(GET) — Flow 1"]
+        EP_TRACK["/track_event\n(POST) — Flow 1"]
+        EP_ADV["/advertiser/stats\n(GET) — Flow 2"]
         EP_METRICS["/metrics\n(GET)"]
         WORKER["🔄 Async Background\nEvent Worker\n(every 5s)"]
     end
 
-    subgraph AI["🤖 AI / ML Layer"]
+    subgraph AI["🤖 AI / ML Layer (Flow 1 only)"]
         EMBED["🧠 SentenceTransformer\nall-MiniLM-L6-v2\n(CPU Encoder)"]
         CHROMA["📦 ChromaDB\nVector Store\n(HNSW Cosine)"]
         XGB["📈 XGBoost LTR\nML Ranker\n(p_click predictor)"]
         GEMINI["✨ Gemini 1.5 Flash\nAgentic Copywriter\n(parallel calls)"]
     end
 
-    subgraph PRIVACY["🔐 Privacy Clean Room"]
+    subgraph PRIVACY["🔐 Privacy Clean Room (DuckDB)"]
         DUCK["🦆 DuckDB\n(2.7M Retailrocket events\n+ Aggregates + Ads)"]
-        DP["📐 Diffprivlib\nLaplace Mechanism\n(ε = 0.1/query)"]
-        BUDGET["💰 Daily ε Budget\nTracker\n(ε_max = 0.9)"]
+        RAW["get_raw_category_stats()\nFlow 1 — NO ε cost\n(user is not a threat)"]
+        DP["get_advertiser_stats()\nFlow 2 — Burns ε per brand\nLaplace Noise Applied"]
+        SYS_BUDGET["💰 System ε Budget\n(legacy /metrics)"]
+        ADV_BUDGET["💰 Per-Advertiser ε Budget\nNike: 0.6/0.9\nSamsung: 0.3/0.9\nFabIndia: 0.3/0.9\nLakme: 0.3/0.9"]
     end
 
     subgraph QUEUE["📬 Event Queue"]
@@ -65,7 +97,7 @@ flowchart TB
 
     UI -->|"1. Browse page"| EP_TRACK
     UI -->|"2. Get ranked ad"| EP_AD
-    UI -->|"3. View metrics"| EP_METRICS
+    ADV -->|"Nike queries stats"| EP_ADV
 
     EP_TRACK --> MEM
     EP_TRACK --> REDIS
@@ -74,19 +106,24 @@ flowchart TB
     WORKER -->|"flush every 5s"| DUCK
 
     EP_AD --> DUCK
-    DUCK --> DP
-    DP --> BUDGET
-    BUDGET -->|"noisy stats"| EMBED
+    DUCK --> RAW
+    RAW -->|"real stats (no noise)"| EMBED
     EMBED -->|"context vector"| CHROMA
     CHROMA -->|"Top-10 candidates"| XGB
     XGB -->|"p(click) scores"| GEMINI
     GEMINI -->|"ranked + copy"| EP_AD
     EP_AD -->|"Ad + metadata"| UI
+
+    EP_ADV --> DUCK
+    DUCK --> DP
+    DP --> ADV_BUDGET
+    ADV_BUDGET -->|"noisy stats per brand"| EP_ADV
+    EP_ADV -->|"DP-noisy campaign data"| ADV
 ```
 
 ---
 
-## 🔄 Diagram 2 — Ad Request Flow (Step-by-Step)
+## 🔄 Diagram 2 — Flow 1: Ad Request (User Sees Ad)
 
 **What happens in `< 150ms` when a user clicks "Browse Page & Get Ad".**
 
@@ -95,8 +132,7 @@ sequenceDiagram
     actor User
     participant ST as 🖥️ Streamlit UI
     participant API as ⚡ FastAPI /get_ad
-    participant CR as 🦆 DuckDB Clean Room
-    participant DP as 📐 Laplace DP
+    participant CR as 🦆 DuckDB (Raw Stats)
     participant EMB as 🧠 SentenceTransformer
     participant VDB as 📦 ChromaDB
     participant XGB as 📈 XGBoost LTR
@@ -105,14 +141,12 @@ sequenceDiagram
     User->>ST: Selects page context & clicks Browse
     ST->>API: GET /get_ad?user_hash=...&page_text=...
 
-    Note over API,DP: Step 1 · Privacy-Safe Stats (~10ms)
-    API->>CR: get_all_ads() + get_dp_category_stats()
-    CR->>DP: Query raw aggregates (views, carts, purchases)
-    DP-->>CR: Add Laplace noise · burn 0.3ε budget
-    CR-->>API: 42 ads + noisy {dp_views, dp_carts, dp_purchases}
+    Note over API,CR: Step 1 · Raw Internal Stats (~5ms) — NO ε burned
+    API->>CR: get_raw_category_stats()
+    CR-->>API: Real aggregates (views, carts, purchases) — internal only
 
     Note over API,VDB: Step 2 · Semantic Retrieval (~10ms)
-    API->>EMB: encode(page_text + noisy_stats)
+    API->>EMB: encode(page_text + raw_stats)
     EMB-->>VDB: 384-dim context vector
     VDB-->>API: Top-10 most similar ads (cosine distance)
 
@@ -130,52 +164,108 @@ sequenceDiagram
 
 ---
 
-## 🔐 Diagram 3 — Differential Privacy Pipeline
+## 📡 Diagram 3 — Flow 2: Advertiser Reporting (Nike Queries Stats)
 
-**How user data is protected at every step in the Clean Room.**
+**What happens when Nike calls the advertiser API.**
+
+```mermaid
+sequenceDiagram
+    actor Nike as 🏢 Nike Marketing Team
+    participant API as ⚡ FastAPI /advertiser/stats
+    participant BUDGET as 💰 advertiser_budget (DuckDB)
+    participant AGG as 🦆 aggregates (DuckDB)
+    participant DP as 📐 Laplace DP
+
+    Nike->>API: GET /advertiser/stats?advertiser_id=Nike
+
+    Note over API,BUDGET: Step 1 · Check Nike's Own Budget
+    API->>BUDGET: SELECT epsilon_used WHERE advertiser_id='Nike' AND date=TODAY
+    BUDGET-->>API: current_eps = 0.30
+
+    alt Budget OK (0.30 + 0.30 ≤ 0.90)
+        API->>BUDGET: UPDATE epsilon_used = 0.60 (burn 0.30ε)
+        Note over API,DP: Step 2 · Fetch + Noisify Stats
+        API->>AGG: SELECT SUM(views, carts, purchases) for shoes category
+        AGG-->>API: Real stats: 45231 views, 3412 carts, 891 purchases
+        API->>DP: Apply Laplace noise (ε=0.1) to each value
+        DP-->>API: Noisy: ~45238 views, ~3409 carts, ~895 purchases
+        API-->>Nike: {noisy_views, noisy_carts, noisy_purchases, ε_used=0.60, ε_remaining=0.30}
+    else Budget Exhausted (would exceed 0.90)
+        API-->>Nike: HTTP 429 — Privacy budget exhausted. Resets tomorrow.
+    end
+
+    Note over Nike: Nike sees TRENDS not INDIVIDUALS
+    Note over Nike: Cannot re-identify any specific Myntra user
+```
+
+---
+
+## 🔐 Diagram 4 — Differential Privacy Pipeline (Updated)
+
+**How user data is protected — and WHERE it applies.**
 
 ```mermaid
 flowchart LR
-    subgraph RAW["📥 Raw Data (Private)"]
-        EV["2.7M Retailrocket\nevent rows\n(views, carts, buys)"]
-        ITEMS["Item → Category\nLookup Table"]
-    end
-
-    subgraph AGG["🧮 Aggregation Layer"]
-        JOIN["SQL JOIN\nevents ↔ item_categories"]
-        STATS["Real Category Stats\nn_views: 45,231\nn_carts: 3,412\nn_purchases: 891"]
+    subgraph WHEN["❓ When is DP Applied?"]
+        Q1{"Who is\nasking?"}
+        Q1 -->|"User getting ad\n(Flow 1)"| NO_DP["✅ NO DP needed\nget_raw_category_stats()\nStats stay internal\nε = 0 burned"]
+        Q1 -->|"Nike querying stats\n(Flow 2)"| YES_DP["🔐 DP REQUIRED\nget_advertiser_stats()\nLaplace noise added\nε = 0.3 burned"]
     end
 
     subgraph DP_LAYER["🔐 Differential Privacy (Laplace Mechanism)"]
-        CHECK{"ε_used + 0.3\n≤ ε_max (0.9)?"}
-        BURN["Burn 0.3ε\nfrom daily budget"]
+        CHECK{"Nike ε_used + 0.3\n≤ ε_max (0.9)?"}
+        BURN["Burn 0.3ε from\nNike's budget"]
         NOISE["Add Laplace Noise\nnoise ~ Lap(Δf/ε)\nΔf=1, ε=0.1"]
-        BLOCK["🚫 Block Query\nBudget Exhausted"]
+        BLOCK["🚫 Block Query\nHTTP 429\nBudget Exhausted"]
     end
 
-    subgraph OUT["📤 Noisy Output (Safe to Use)"]
+    subgraph OUT["📤 Noisy Output (Safe for Nike)"]
         NSTATS["Noisy Stats\ndp_views: ~45,238\ndp_carts: ~3,409\ndp_purchases: ~895"]
-        PERSIST["DuckDB:\ndate | epsilon_used\n2026-03-28 | 0.60"]
+        PERSIST["DuckDB advertiser_budget:\nNike  | 2026-04-16 | 0.60ε\nSamsung| 2026-04-16 | 0.30ε"]
     end
 
-    EV --> JOIN
-    ITEMS --> JOIN
-    JOIN --> STATS
-    STATS --> CHECK
+    YES_DP --> CHECK
     CHECK -->|"YES · budget OK"| BURN
     BURN --> NOISE
     NOISE --> NSTATS
     BURN --> PERSIST
     CHECK -->|"NO · exhausted"| BLOCK
-
-    NSTATS -->|"feeds into"| CTX["Embedding\nContext String"]
 ```
-
-**Key guarantee:** Even if an attacker sees thousands of query outputs, they **cannot determine** whether any single user's data was included — mathematically proven by the ε-DP budget.
 
 ---
 
-## 🤖 Diagram 4 — ML Ranking Pipeline
+## 🏢 Diagram 5 — Per-Advertiser Budget Isolation
+
+**Each brand has their own daily ε quota — completely independent.**
+
+```mermaid
+flowchart TD
+    POOL["🦆 DuckDB\nadvertiser_budget table"]
+
+    subgraph NIKE["Nike's Budget"]
+        N1["Query 1: ε = 0.30"]
+        N2["Query 2: ε = 0.60"]
+        N3["Query 3: ε = 0.90 ✅ max"]
+        N4["Query 4: 🚫 BLOCKED"]
+    end
+
+    subgraph SAMSUNG["Samsung's Budget (independent)"]
+        S1["Query 1: ε = 0.30"]
+        S2["Query 2: ε = 0.60"]
+        S3["Still has 0.30ε left"]
+    end
+
+    POOL --> NIKE
+    POOL --> SAMSUNG
+
+    NIKEF["Nike burns ALL budget\n→ Samsung is UNAFFECTED"]
+    NIKE --> NIKEF
+    SAMSUNG --> NIKEF
+```
+
+---
+
+## 🤖 Diagram 6 — ML Ranking Pipeline (Flow 1)
 
 **Three-stage AI pipeline: Vector Search → XGBoost Reranking → LLM Copy.**
 
@@ -221,7 +311,7 @@ flowchart TD
 
 ---
 
-## 📬 Diagram 5 — Event Ingestion Pipeline
+## 📬 Diagram 7 — Event Ingestion Pipeline
 
 **How user browsing events are asynchronously captured and stored.**
 
@@ -266,7 +356,7 @@ flowchart LR
 
 ---
 
-## 🐳 Diagram 6 — Deployment Architecture
+## 🐳 Diagram 8 — Deployment Architecture
 
 **How the project runs inside a single Docker container on Railway.**
 
@@ -287,9 +377,8 @@ flowchart TB
             end
 
             subgraph VOLUMES["Data (ephemeral)"]
-                DUCKDB_F["data/clean_room.duckdb"]
+                DUCKDB_F["data/clean_room.duckdb\n(events + aggregates\n+ privacy_budget\n+ advertiser_budget)"]
                 CHROMA_F["data/chroma/\n(vector index)"]
-                MODEL_F["~/.cache/huggingface/\n(model weights)"]
                 XGB_F["data/ltr_model.json"]
             end
         end
@@ -297,20 +386,10 @@ flowchart TB
         PORT_ENV["$PORT env var\n(Railway-assigned)\nHealth check + public traffic"]
     end
 
-    subgraph LOCAL["💻 Local Dev"]
-        SH["./start.sh\n(PORT defaults to 7860)"]
-        LOCAL_UI["http://localhost:7860"]
-        LOCAL_API["http://localhost:18000/docs"]
-    end
-
     STREAMLIT -->|"HTTP calls\n127.0.0.1:18000"| UVICORN
     UVICORN --> DUCKDB_F
     UVICORN --> CHROMA_F
     UVICORN --> XGB_F
-    STREAMLIT --> PORT
-
-    SH -->|"same behavior"| LOCAL_UI
-    SH -->|"same behavior"| LOCAL_API
 ```
 
 ---
@@ -341,19 +420,94 @@ flowchart TB
 | **LLM Copy** | ~80ms | Parallel Gemini Flash calls via ThreadPoolExecutor |
 | **End-to-End** | < 150ms p95 | Async FastAPI + cached embeddings |
 | **Catalog Scale** | 10,000+ ads | HNSW index with zero latency degradation |
-| **Privacy Budget** | ε ≤ 0.9/day | DuckDB-persisted budget, resets daily |
+| **User Ad Requests** | Unlimited/day | Flow 1 uses raw stats — no ε cost |
+| **Advertiser Queries** | 3/day per brand | Flow 2 burns 0.3ε per query, max 0.9ε |
 
 ---
 
 ## 🔐 Differential Privacy Math
 
-Every aggregate query on user data has **Laplace noise** mathematically injected:
+Every aggregate query on user data (Flow 2 only) has **Laplace noise** mathematically injected:
 
 $$\mathcal{M}(x) = x + \text{Lap}\!\left(\frac{\Delta f}{\varepsilon}\right)$$
 
-- **ε = 0.1** per noise application (3 noisy values = 0.3ε per ad request)
-- **ε_max = 0.9** — queries are hard-blocked beyond this  
-- **Attack Protection:** The `ε_used` state is stored **persistently in DuckDB**. A malicious attacker cannot restart the server to restore budget and extract raw PII — the budget survives reboots.
+- **ε = 0.1** per noise application (3 noisy values = 0.3ε per advertiser query)
+- **ε_max = 0.9** — queries are hard-blocked beyond this
+- **Per-advertiser budget** — Nike's queries don't consume Samsung's budget
+- **Attack Protection:** The `ε_used` state is stored **persistently in DuckDB** in `advertiser_budget` table. A malicious attacker cannot restart the server to restore budget.
+
+### Why DP only in Flow 2 (not Flow 1)?
+
+```
+Flow 1 (User → Ad):
+  Stats are used INTERNALLY by the ML pipeline only.
+  They never leave the system. The user is not a threat.
+  → Raw stats, zero ε cost, unlimited requests.
+
+Flow 2 (Nike → Stats):
+  Stats are RETURNED to an external party (Nike).
+  Nike could run difference attacks to identify users.
+  → Noisy stats, 0.3ε per query, hard cap at 0.9ε/day.
+```
+
+---
+
+## 📡 API Reference
+
+### Flow 1 — Ad Serving
+
+| Endpoint | Method | Purpose | ε Cost |
+|---|---|---|---|
+| `/` | GET | Health check | 0 |
+| `/healthz` | GET | Railway health probe | 0 |
+| `/track_event` | POST | Log user browsing event (fire-and-forget) | 0 |
+| `/get_ad` | GET | Return ranked personalised ad | **0** (uses raw stats) |
+| `/metrics` | GET | System-level CTR lift + budget stats | 0 |
+
+### Flow 2 — Advertiser Reporting
+
+| Endpoint | Method | Purpose | ε Cost |
+|---|---|---|---|
+| `/advertiser/stats` | GET | Return DP-noisy campaign stats for one advertiser | **0.3ε per call** |
+
+#### `/advertiser/stats` Request
+```
+GET /advertiser/stats?advertiser_id=Nike&retailer=Myntra
+```
+
+#### `/advertiser/stats` Response
+```json
+{
+  "advertiser_id":     "Nike",
+  "category":          "shoes",
+  "noisy_views":       45238,
+  "noisy_carts":       3409,
+  "noisy_purchases":   895,
+  "cart_rate_pct":     7.53,
+  "purchase_rate_pct": 1.97,
+  "epsilon_used":      0.60,
+  "epsilon_remaining": 0.30,
+  "epsilon_max":       0.90,
+  "dp_noise_applied":  true
+}
+```
+
+#### Error: Budget Exhausted
+```
+HTTP 429 Too Many Requests
+{"detail": "[Nike] Privacy budget exhausted: ε=0.90 + 0.3 > 0.9"}
+```
+
+---
+
+## 🎮 Demo Advertisers
+
+| Advertiser | Category | Ad IDs | Brand Color |
+|---|---|---|---|
+| **Nike** | Shoes | A1, A5, A9, A13, A14, A15, A16, A17 | #f97316 (Orange) |
+| **Samsung** | Electronics | A2, A6, A10, A19–A24 | #3b82f6 (Blue) |
+| **FabIndia** | Ethnic Wear | A3, A7, A25–A30 | #f59e0b (Amber) |
+| **Lakme** | Skincare | A4, A8, A31–A36 | #ec4899 (Pink) |
 
 ---
 
@@ -367,9 +521,8 @@ pip install -r requirements.txt
 ```
 
 **Step 2 — Set API Key**
-Create a `.env` file:
 ```env
-GEMINI_API_KEY=your_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
 **Step 3 — One-command startup**
@@ -377,12 +530,10 @@ GEMINI_API_KEY=your_api_key_here
 ./start.sh
 ```
 
-This automatically starts **FastAPI on port 8000** (background) and **Streamlit on port 7860** (foreground).
-
 | Service | URL |
 |---|---|
 | 🖥️ Streamlit UI | http://localhost:7860 |
-| ⚙️ FastAPI Swagger | http://localhost:8000/docs |
+| ⚙️ FastAPI Swagger | http://localhost:18000/docs |
 
 ---
 
@@ -390,24 +541,24 @@ This automatically starts **FastAPI on port 8000** (background) and **Streamlit 
 
 ```
 rmn-engine/
-├── data/                        # Auto-generated at runtime
-│   ├── clean_room.duckdb        # DuckDB database (2.7M events + aggregates)
+├── data/
+│   ├── clean_room.duckdb        # DuckDB (2.7M events + aggregates + ε budgets)
 │   ├── ltr_model.json           # Trained XGBoost model
-│   └── chroma/                  # ChromaDB vector index (42+ ad embeddings)
+│   └── chroma/                  # ChromaDB vector index (42 ad embeddings)
 │
 ├── src/
-│   ├── config.py                # 🔧 All constants, API keys, ad catalogue
-│   ├── api.py                   # ⚡ FastAPI app + async background worker
-│   ├── clean_room.py            # 🦆 DuckDB schema, DP queries, budget tracking
+│   ├── config.py                # 🔧 Constants, API keys, ad catalogue, ADVERTISER_CATALOGUE
+│   ├── api.py                   # ⚡ FastAPI — /get_ad, /track_event, /advertiser/stats
+│   ├── clean_room.py            # 🦆 DuckDB schema, raw stats, DP stats, per-advertiser budget
 │   ├── embeddings.py            # 🧠 SentenceTransformer + ChromaDB integration
 │   ├── ltr.py                   # 📈 XGBoost LTR trainer & inference
 │   ├── ranking.py               # 🎯 Full ranking pipeline (Chroma → XGB → LLM)
 │   ├── agent.py                 # ✨ Gemini Flash agentic copy generation
-│   └── streamlit_app.py         # 🖥️ 4-tab Streamlit dashboard
+│   └── streamlit_app.py         # 🖥️ 5-tab Streamlit dashboard
 │
 ├── Dockerfile                   # 🐳 Railway Docker container
 ├── start.sh                     # 🚀 Startup orchestration script
-├── requirements.txt             # 📦 Python dependencies (CPU-optimized)
+├── requirements.txt             # 📦 Python dependencies
 └── README.md
 ```
 
@@ -415,37 +566,55 @@ rmn-engine/
 
 ## 📊 Data Flow Summary
 
+### Flow 1 — User Receives Ad
 ```
-User browses page
+User browses "summer running shoes under ₹2000"
       │
-      ▼
-POST /track_event ──► In-Memory Queue ──► [every 5s] ──► DuckDB
-      │                                                       │
-      ▼                                                       ▼
-GET /get_ad                                          Rebuild Aggregates
+      ├──► POST /track_event ──► Queue ──► [every 5s] ──► DuckDB
       │
-      ├─► DuckDB ──► Laplace DP ──► Noisy Category Stats
-      │                                      │
-      ├─────────────────────────────────────►│
-      │                                      ▼
-      │                            SentenceTransformer
-      │                            (encode context vector)
-      │                                      │
-      │                                      ▼
-      │                            ChromaDB HNSW Query
-      │                            (Top-10 semantic matches)
-      │                                      │
-      │                                      ▼
-      │                            XGBoost LTR Scoring
-      │                            (p(click) per candidate)
-      │                                      │
-      │                               ┌──────┴──────┐
-      │                               ▼             ▼
-      │                         Gemini #1      Gemini #2,3
-      │                         (parallel copy generation)
-      │                               └──────┬──────┘
-      │                                      │
-      ◄──────────────────────────────────────┘
-              Top-3 Ranked Ads + Personalized Copy
-              + latency_ms + epsilon_used + ctr_lift_pct
+      └──► GET /get_ad
+                │
+                ├─► DuckDB get_raw_category_stats() ─► Real stats (NO noise, NO ε)
+                │                                             │
+                ├─────────────────────────────────────────────┤
+                │                                             ▼
+                │                                   SentenceTransformer
+                │                                   (encode context vector)
+                │                                             │
+                │                                             ▼
+                │                                   ChromaDB HNSW Query
+                │                                   (Top-10 semantic matches)
+                │                                             │
+                │                                             ▼
+                │                                   XGBoost LTR Scoring
+                │                                   (p(click) per candidate)
+                │                                             │
+                │                                    ┌────────┴────────┐
+                │                                    ▼                 ▼
+                │                              Gemini #1          Gemini #2,3
+                │                              (parallel copy generation)
+                │                                    └────────┬────────┘
+                │                                             │
+                ◄─────────────────────────────────────────────┘
+                        Top-3 Ranked Ads + Personalised Copy
+```
+
+### Flow 2 — Nike Checks Campaign Performance
+```
+Nike calls: GET /advertiser/stats?advertiser_id=Nike
+      │
+      └──► DuckDB advertiser_budget: check Nike's ε used today
+                │
+                ├─ [0.60 + 0.30 = 0.90 ≤ 0.90] → OK
+                │         Burn 0.30ε from Nike's budget → persist to DuckDB
+                │
+                ├─► DuckDB aggregates: fetch real views/carts/purchases
+                │
+                ├─► Laplace noise applied to each value
+                │         views:     45231 + Lap(10) = 45238
+                │         carts:     3412  + Lap(10) = 3409
+                │         purchases: 891   + Lap(10) = 895
+                │
+                └──► Nike sees noisy stats (useful for bidding, safe for users)
+                         ε_used=0.60, ε_remaining=0.30, queries_left=1
 ```
